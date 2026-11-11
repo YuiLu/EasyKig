@@ -1,0 +1,8 @@
+.git
+.venv
+dist
+**/.env
+**/.env.*
+**/__pycache__
+**/.pytest_cache
+**/reference-presets

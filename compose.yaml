@@ -1,0 +1,11 @@
+services:
+  easykig-gateway:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    env_file:
+      - ./server/.env
+    ports:
+      # Keep port local; use SSH tunnel or HTTPS reverse proxy for remote clients.
+      - '127.0.0.1:8000:8000'
+    restart: unless-stopped

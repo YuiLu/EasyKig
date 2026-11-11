@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+server/.env
+*.blend1
+*.blend2
+easykig_outputs/
+.venv/
+dist/
+reference-presets/
+.DS_Store

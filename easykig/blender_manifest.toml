@@ -1,0 +1,13 @@
+schema_version = "1.0.0"
+id = "easykig"
+version = "0.1.0"
+name = "EasyKig"
+tagline = "PMX import, kigurumi morph editing and AI product previews"
+maintainer = "EasyKig contributors"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:MIT"]
+
+[permissions]
+files = "Read models and images, write previews and exports"
+network = "Connect to the configured preview and 3D editing server"
