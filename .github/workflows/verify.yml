@@ -1,0 +1,42 @@
+name: Verify and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r server/requirements.txt pytest
+      - run: python -m pytest -q
+
+  release:
+    if: github.ref_type == 'tag' && github.event_name == 'push'
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Package Blender extension
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("easykig/blender_manifest.toml", "rb"))["version"])')"
+          test "$GITHUB_REF_NAME" = "v$version"
+          git archive --format=zip --output="easykig-$version.zip" HEAD:easykig
+      - name: Publish extension
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" easykig-*.zip --verify-tag --generate-notes

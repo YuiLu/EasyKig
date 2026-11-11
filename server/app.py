@@ -156,6 +156,15 @@ async def provider_image_edit(images: list[bytes], prompt: str):
             status = exc.response.status_code
             if status in (401, 403):
                 raise HTTPException(status_code=502, detail=f'Image API rejected the provider credentials or model access (HTTP {status})')
+            if status == 429:
+                try:
+                    code = exc.response.json()['error']['code']
+                except (KeyError, TypeError, ValueError):
+                    code = None
+                detail = ('Image provider quota exhausted (HTTP 429). Check the provider billing and quota.'
+                          if code in ('insufficient_quota', 'billing_hard_limit_reached')
+                          else 'Image provider rate limit or quota reached (HTTP 429). Check the provider limits.')
+                raise HTTPException(status_code=502, detail=detail) from exc
             raise HTTPException(status_code=502, detail=f'Image API returned HTTP {status}')
         except httpx.TimeoutException as exc:
             raise HTTPException(status_code=504, detail='Image provider timed out') from exc
