@@ -5,6 +5,7 @@
 ## `GET /health`
 
 无需鉴权。返回 `status`、`version`、`preview_enabled` 和 `mesh_editor_enabled`。后两个字段表示已配置相应凭据或上游地址。
+同时返回 `image_model`（默认模型）和 `image_models`（允许选择的模型 ID 列表）。
 
 ## `POST /v1/edit/parameters`
 
@@ -38,6 +39,8 @@
 ## `POST /v1/preview/finish`
 
 请求 `{"white_png_base64":"...","reference_png_base64":"... (optional)","prompt":"..."}`，响应 `{"image_png_base64":"...","mode":"image_edit","warning":"..."}`。源图限 8MB PNG。
+
+两个图像接口都接受可选的 `model`。省略时使用 `OPENAI_IMAGE_MODEL`，指定时须匹配默认模型或 `EASYKIG_IMAGE_MODELS` 中的模型 ID。
 
 ## `POST /v1/edit3d`
 

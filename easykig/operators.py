@@ -25,6 +25,22 @@ def _prefs(context):
     return addon.preferences
 
 
+def _check_image_model(model, server_info):
+    allowed = server_info.get('image_models', [])
+    if model and model not in allowed:
+        names = ', '.join(allowed) or 'not reported'
+        raise ValueError(f'Selected image model is unavailable. Gateway models: {names}')
+
+
+def _request_image(context, endpoint, data):
+    prefs = _prefs(context)
+    model = prefs.image_model.strip()
+    if model:
+        _check_image_model(model, request_json(prefs, '/health'))
+        data = {**data, 'model': model}
+    return request_json(prefs, endpoint, data)
+
+
 def _face(context):
     obj=_settings(context).face
     if not obj or obj.type != 'MESH':
@@ -252,8 +268,17 @@ class EASYKIG_OT_health(bpy.types.Operator):
     bl_label='Test Remote Server'
     def execute(self,context):
         try:
-            r=request_json(_prefs(context),'/health')
-            self.report({'INFO'},f"Server: {r.get('name','unknown')} / {r.get('status','unknown')}")
+            prefs = _prefs(context)
+            info = request_json(prefs, '/health')
+            model = prefs.image_model.strip()
+            _check_image_model(model, info)
+            active_model = model or info.get('image_model')
+            status = f"Server: {info.get('status', 'unknown')}"
+            if not info.get('preview_enabled'):
+                status += ' | Image provider not configured'
+            elif active_model:
+                status += f' | Image model: {active_model}'
+            self.report({'INFO'}, status)
             return {'FINISHED'}
         except Exception as exc:
             return _notify_failure(self,exc)
@@ -284,6 +309,54 @@ class EASYKIG_OT_ai_morph(bpy.types.Operator):
             return _notify_failure(self,exc)
 
 
+class EASYKIG_OT_set_reference(bpy.types.Operator):
+    bl_idname = 'easykig.set_reference'
+    bl_label = 'Set EasyKig Reference Image'
+    bl_description = 'Choose or drop a PNG reference image'
+    filepath: StringProperty(subtype='FILE_PATH', options={'SKIP_SAVE'})
+    filter_glob: StringProperty(default='*.png', options={'HIDDEN'})
+    clear: bpy.props.BoolProperty(options={'SKIP_SAVE', 'HIDDEN'})
+
+    def invoke(self, context, event):
+        if self.filepath or self.clear:
+            return self.execute(context)
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        try:
+            if self.clear:
+                path = ''
+            else:
+                if not self.filepath:
+                    raise ValueError('Choose a PNG reference image')
+                path = bpy.path.abspath(self.filepath)
+                with Path(path).open('rb') as image:
+                    if image.read(8) != b'\x89PNG\r\n\x1a\n':
+                        raise ValueError('Choose a valid PNG reference image')
+            settings = _settings(context)
+            if settings.reference_image != path:
+                settings.reference_image = path
+            return {'FINISHED'}
+        except (OSError, ValueError) as exc:
+            return _notify_failure(self, exc)
+
+
+class EASYKIG_FH_reference(bpy.types.FileHandler):
+    bl_idname = 'EASYKIG_FH_reference'
+    bl_label = 'EasyKig Reference Image'
+    bl_import_operator = 'easykig.set_reference'
+    bl_file_extensions = '.png'
+
+    @classmethod
+    def poll_drop(cls, context):
+        return bool(
+            context.area and context.area.type == 'VIEW_3D'
+            and context.region and context.region.type == 'UI'
+            and context.region.active_panel_category == 'EasyKig'
+        )
+
+
 class EASYKIG_OT_reference_design(bpy.types.Operator):
     bl_idname='easykig.reference_design'
     bl_label='AI Character → Kig Design Reference'
@@ -307,7 +380,7 @@ class EASYKIG_OT_reference_design(bpy.types.Operator):
                 'design': (s.expression_image, s.shell_example_image),
                 'product': (s.shell_example_image, s.expression_image),
             }[self.stage]
-            result=request_json(_prefs(context),'/v1/reference/transform',{
+            result=_request_image(context,'/v1/reference/transform',{
                 'source_png_base64':encode_png(source),
                 'stage':self.stage,
                 'prompt':s.finishing_prompt,
@@ -317,6 +390,7 @@ class EASYKIG_OT_reference_design(bpy.types.Operator):
             dest=str(Path(output_folder(s))/filename)
             save_b64_png(result['image_png_base64'],dest)
             setattr(s, output_property, dest)
+            s.result_view = self.stage
             if self.stage == 'head':
                 s.last_design_png = ''
             if self.stage in ('head', 'design'):
@@ -333,6 +407,7 @@ class EASYKIG_OT_render_white(bpy.types.Operator):
     def execute(self,context):
         try:
             path=white_render(context,_face(context))
+            _settings(context).result_view = 'white'
             self.report({'INFO'},f'White render: {path}')
             return {'FINISHED'}
         except Exception as exc:
@@ -353,10 +428,11 @@ class EASYKIG_OT_render_finished(bpy.types.Operator):
             if settings.reference_image:
                 ref=bpy.path.abspath(settings.reference_image)
                 data['reference_png_base64']=encode_png(ref)
-            result=request_json(_prefs(context),'/v1/preview/finish',data)
+            result=_request_image(context,'/v1/preview/finish',data)
             filepath=str(Path(output_folder(settings))/('finished_'+datetime.datetime.now().strftime('%Y%m%d_%H%M%S')+'.png'))
             save_b64_png(result['image_png_base64'],filepath)
             settings.last_finished_png=filepath
+            settings.result_view = 'finished'
             self.report({'INFO'},f'AI design preview saved: {filepath}')
             return {'FINISHED'}
         except Exception as exc:
@@ -438,7 +514,8 @@ _CLASSES = (
     EASYKIG_OT_split_materials,EASYKIG_OT_make_working_copy,EASYKIG_OT_create_demo,
     EASYKIG_OT_set_units,EASYKIG_OT_resize_height,EASYKIG_OT_basic_mesh_check,
     EASYKIG_OT_add_solidify,EASYKIG_OT_export_stl,
-    EASYKIG_OT_health,EASYKIG_OT_ai_morph,EASYKIG_OT_reference_design,
+    EASYKIG_OT_health,EASYKIG_OT_ai_morph,EASYKIG_OT_set_reference,EASYKIG_FH_reference,
+    EASYKIG_OT_reference_design,
     EASYKIG_OT_render_white,
     EASYKIG_OT_render_finished,EASYKIG_OT_open_image,EASYKIG_OT_remote_mesh_edit,
 )

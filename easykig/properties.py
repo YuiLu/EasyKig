@@ -1,5 +1,11 @@
 import bpy
-from bpy.props import FloatProperty, PointerProperty, StringProperty
+from bpy.props import EnumProperty, FloatProperty, PointerProperty, StringProperty
+
+
+def reset_reference_results(settings, _context):
+    settings.last_head_png = ''
+    settings.last_design_png = ''
+    settings.last_product_png = ''
 
 
 class EASYKIG_AddonPreferences(bpy.types.AddonPreferences):
@@ -12,14 +18,23 @@ class EASYKIG_AddonPreferences(bpy.types.AddonPreferences):
     )
     server_token: StringProperty(name="Server Token", subtype="PASSWORD", default="")
     timeout_seconds: FloatProperty(name="Request Timeout (s)", default=360, min=5, max=600)
+    image_model: StringProperty(
+        name="Image Model", maxlen=160,
+        description="Model ID allowed by the gateway. Leave blank to use its default",
+    )
+    preview_directory: StringProperty(
+        name="Preview Folder Override", subtype="DIR_PATH",
+        description="Leave blank to use the project's preview folder",
+    )
 
     def draw(self, context):
         col = self.layout.column(align=True)
         col.prop(self, "server_url")
         col.prop(self, "server_token")
         col.prop(self, "timeout_seconds")
-        col.label(text="Use HTTPS and a reverse proxy for remote access.", icon='INFO')
-        col.label(text="Token is stored in local Blender preferences; do not share your prefs file.")
+        col.prop(self, "image_model")
+        col.prop(self, "preview_directory")
+        col.operator("easykig.health", text="Test Connection", icon='CHECKMARK')
 
 
 class EASYKIG_Settings(bpy.types.PropertyGroup):
@@ -34,7 +49,9 @@ class EASYKIG_Settings(bpy.types.PropertyGroup):
     height_mm: FloatProperty(name="Target Height (mm)", default=260, min=100, max=600)
     shell_thickness_mm: FloatProperty(name="Shell Thickness (mm)", default=2.0, min=0.5, max=12)
     preview_output_dir: StringProperty(name="Preview Directory", default="//easykig_outputs", subtype="DIR_PATH")
-    reference_image: StringProperty(name="Reference Image", default="", subtype="FILE_PATH")
+    reference_image: StringProperty(
+        name="Reference Image", subtype="FILE_PATH", update=reset_reference_results,
+    )
     expression_image: StringProperty(name="Expression Reference", subtype="FILE_PATH")
     character_image: StringProperty(name="Character Colors Reference", subtype="FILE_PATH")
     shell_example_image: StringProperty(name="Shell / Product Example", subtype="FILE_PATH")
@@ -47,6 +64,17 @@ class EASYKIG_Settings(bpy.types.PropertyGroup):
     last_product_png: StringProperty(name="Product Reference", default="")
     last_white_png: StringProperty(name="White Render", default="")
     last_finished_png: StringProperty(name="Finished Preview", default="")
+    result_view: EnumProperty(
+        name="Preview",
+        items=[
+            ('head', 'Head', 'Character head reference'),
+            ('design', 'Design', 'Kigurumi design reference'),
+            ('product', 'Product', 'Product reference'),
+            ('white', 'White Clay', 'White clay render'),
+            ('finished', 'Finished', 'Finished preview'),
+        ],
+        default='finished',
+    )
 
 
 _CLASSES = (EASYKIG_AddonPreferences, EASYKIG_Settings)

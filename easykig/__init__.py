@@ -2,7 +2,7 @@
 bl_info = {
     "name": "EasyKig",
     "author": "EasyKig contributors",
-    "version": (0, 1, 0),
+    "version": (0, 1, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > EasyKig",
     "description": "PMX preprocessing, template morph editing, white-shell preview and remote AI finishing",

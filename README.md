@@ -5,11 +5,10 @@ EasyKig 是 Blender 4.5 LTS 的 Kigurumi 头壳设计插件，配套 FastAPI 网
 ## Blender 安装与操作
 
 1. 下载 [EasyKig 扩展 ZIP](https://github.com/YuiLu/EasyKig/releases)，在 Blender 的 **Preferences → Get Extensions → Install from Disk** 安装。也可以从仓库根目录运行 `blender --command extension build --source-dir easykig`。
-2. 在 3D View 按 **N** 打开 **EasyKig**。点击 **Demo Template** 查看 8 个 Shape Keys。编辑外部模板时，选中网格后点 **Use Selected**。多件模板可指定 **Preview Collection**，白模会包括集合里的网格，Shape Keys 仍按当前 Face 网格编辑。
-3. 如需导入 PMX 或 PMD，在 Blender 的扩展管理器独立安装 **MMD Tools 4.x**。点击 **Import PMX (minimal)**，检查自动选出的 Face 和导入尺寸。默认每 PMX 单位按 0.08 米换算，可调整 **PMX Scale**。拆材质和烘焙操作会将当前 Morph 烘焙到新副本，原网格及其 Shape Keys 保留。
-4. **Render White Clay** 生成正面 1024×1024 白模。改变几何后重新渲染，再点 **Generate Finished Preview**。插件把最近的白模和可选角色参考图送给网关，预览图写入 **Preview Directory**。
-5. 参考图流程使用 **Character Head → Kig Design → Product**。辅助图可选。Character Head 使用表情与角色配色，Kig Design 使用表情与头壳案例，Product 使用商品照案例与表情。点击相应的结果按钮查看生成图。
-6. 远端配置在 **Preferences → Add-ons → EasyKig**。开启 Blender 的 **Allow Online Access**，填写 **3D Editing Server URL**、**Server Token** 和 **Request Timeout (s)**，再执行 **Test Connection**。远端 GLB 结果作为新对象导入，源网格可在场景中继续使用。
+2. 在 3D View 按 **N** 打开 **EasyKig**。把参考 PNG 拖入 EasyKig 侧栏，或点击 **Drop PNG or Browse** 选择文件。如果 Blender 弹出导入菜单，选 **Set EasyKig Reference Image**。填写 **Prompt**，按 **Head → Design → Product** 生成参考图。可在 **Supporting Images** 里添加表情、角色配色和头壳案例。
+3. **White Clay** 生成 1024×1024 正面白模。改变几何后重新渲染，再点击 **Finish**，将白模和可选的角色参考图送给网关。面板显示当前结果的缩略图，可切换阶段或点击 **Open Full Size**。
+4. 展开 **Modeling Tools** 可创建 **Demo Template** 或使用选中的外部网格。**Preview Collection** 可把集合里的其他网格纳入白模。安装独立的 **MMD Tools 4.x** 后可使用 **PMX and Material Prep**，拆材质会烘焙到新副本。
+5. 在 **Preferences → Add-ons → EasyKig** 配置 **3D Editing Server URL**、**Server Token**、**Request Timeout (s)**、**Image Model** 和可选的 **Preview Folder Override**。开启 Blender 的 **Allow Online Access** 后点击 **Test Connection**。**Image Model** 留空时使用网关默认模型。指定模型需要 v0.1.1 或更新的网关。
 
 **Remote Text → Shape Keys** 使用规则式参数调整。STL 以毫米导出，Solidify 与拓扑检查用于设计阶段。眼孔、内壳、佩戴空间与制造公差仍需工程验证。
 
@@ -26,7 +25,7 @@ python -m pip install -r server/requirements.txt
 # Windows PowerShell: Copy-Item server/.env.example server/.env
 ```
 
-在 `server/.env` 设置随机生成的 `EASYKIG_SERVER_TOKEN`。图像预览使用 `OPENAI_IMAGE_API_KEY`、`OPENAI_IMAGE_API_BASE` 和 `OPENAI_IMAGE_MODEL`。GLB 转发使用 `EASYKIG_EDIT3D_UPSTREAM_URL`（完整端点）和可选的 `EASYKIG_EDIT3D_UPSTREAM_TOKEN`。保存后用以下任一方式启动：
+在 `server/.env` 设置随机生成的 `EASYKIG_SERVER_TOKEN`。图像预览使用 `OPENAI_IMAGE_API_KEY`、`OPENAI_IMAGE_API_BASE` 和默认模型 `OPENAI_IMAGE_MODEL`。通过 `EASYKIG_IMAGE_MODELS` 添加 Blender 可选择的模型 ID，以逗号分隔。GLB 转发使用 `EASYKIG_EDIT3D_UPSTREAM_URL`（完整端点）和可选的 `EASYKIG_EDIT3D_UPSTREAM_TOKEN`。保存后用以下任一方式启动：
 
 ```bash
 python -m uvicorn server.app:app --env-file server/.env --host 127.0.0.1 --port 8000
@@ -39,7 +38,7 @@ docker compose up --build -d
 
 默认使用 EasyKig 自带 Prompt。要逐字使用已有授权的参考图 Prompt，把三阶段正文分别存为 UTF-8 的 `head.txt`、`design.txt` 和 `product.txt`，在网关设置 `EASYKIG_REFERENCE_PROMPTS_DIR` 指向它们。网关原样发送文件内容。使用 Docker 时，把该目录以只读方式挂载，并将变量设置为容器内路径。预设的署名、许可与适用范围随预设保存。
 
-**Generate Finished Preview** 使用白模专用 Prompt，以渲染角度、轮廓和五官位置作为约束。参考图预设用于独立的三阶段工作流。
+**Finish** 使用白模专用 Prompt，以渲染角度、轮廓和五官位置作为约束。参考图预设用于独立的三阶段工作流。
 
 ## 开发验收
 

@@ -78,7 +78,7 @@ def test_reference_preset_forwarded_verbatim(monkeypatch, tmp_path):
     source = PNG_HEADER + b'source'
     extra = PNG_HEADER + b'expression'
 
-    async def fake_provider(images, prompt):
+    async def fake_provider(images, prompt, model):
         assert images == [source, extra]
         assert prompt == preset
         return base64.b64encode(source).decode()
@@ -108,3 +108,27 @@ def test_configured_reference_preset_missing_file(monkeypatch, tmp_path):
     )
     assert response.status_code == 503
     assert 'preset' in response.json()['detail']
+
+
+def test_image_model_is_selected_only_from_gateway_models(monkeypatch):
+    from server import app as gateway
+
+    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'secret')
+    monkeypatch.setenv('OPENAI_IMAGE_MODEL', 'default-image')
+    monkeypatch.setenv('EASYKIG_IMAGE_MODELS', 'fast-image, default-image')
+    seen = []
+    png = base64.b64encode(PNG_HEADER).decode()
+
+    async def fake_provider(images, prompt, model):
+        seen.append(model)
+        return png
+
+    monkeypatch.setattr(gateway, 'provider_image_edit', fake_provider)
+    headers = {'Authorization': 'Bearer secret'}
+    assert client.get('/health').json()['image_models'] == ['default-image', 'fast-image']
+    url = '/v1/preview/finish'
+    payload = {'white_png_base64': png}
+    assert client.post(url, headers=headers, json=payload).status_code == 200
+    assert client.post(url, headers=headers, json={**payload, 'model': 'fast-image'}).status_code == 200
+    assert client.post(url, headers=headers, json={**payload, 'model': 'unknown'}).status_code == 422
+    assert seen == ['default-image', 'fast-image']

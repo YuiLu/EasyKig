@@ -2,7 +2,9 @@
 
 目标平台为 Blender 4.5 LTS。插件和网关分别位于 `easykig/` 与 `server/`，安装、配置和部署步骤见 [README](README.md)，请求格式见 [API 文档](docs/API.md)。
 
-[v0.1.0 安装包](https://github.com/YuiLu/EasyKig/releases/tag/v0.1.0) 已发布。GitHub Actions 在推送和 PR 时运行测试，推送与扩展版本一致的 `v*` 标签时发布 ZIP。
+[扩展安装包](https://github.com/YuiLu/EasyKig/releases) 由 GitHub Actions 发布。推送和 PR 会运行测试，推送与扩展版本一致的 `v*` 标签时发布 ZIP。
+
+v0.1.1 将服务配置、图像模型和预览目录设置放到扩展偏好。侧栏默认展示参考图、Prompt、生成操作和结果缩略图，建模工具默认折叠。
 
 ## 已验收
 

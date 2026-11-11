@@ -7,7 +7,9 @@ from mathutils import Matrix, Vector
 
 
 def output_folder(settings):
-    path = settings.preview_output_dir
+    addon = bpy.context.preferences.addons.get(__package__)
+    override = addon.preferences.preview_directory if addon else ''
+    path = override or settings.preview_output_dir
     if not path or (path.startswith('//') and not bpy.data.filepath):
         folder = Path(tempfile.gettempdir()) / 'easykig_outputs'
     else:

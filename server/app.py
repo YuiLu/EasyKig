@@ -25,7 +25,7 @@ MAX_PNG=8*1024*1024
 MAX_GLB=20*1024*1024
 PNGSIG=b'\x89PNG\r\n\x1a\n'
 
-app=FastAPI(title='EasyKig Remote Gateway',version='0.1.0',docs_url=None,redoc_url=None)
+app=FastAPI(title='EasyKig Remote Gateway',version='0.1.1',docs_url=None,redoc_url=None)
 
 
 def setting(name: str, default: str = '') -> str:
@@ -70,12 +70,14 @@ class PreviewIn(BaseModel):
     white_png_base64: str=Field(min_length=10,max_length=12_000_000)
     reference_png_base64: str|None=Field(default=None,max_length=12_000_000)
     prompt: str=Field(default='',max_length=1500)
+    model: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 class ReferenceIn(BaseModel):
     source_png_base64: str=Field(min_length=10,max_length=12_000_000)
     stage: str=Field(pattern='^(head|design|product)$')
     prompt: str=Field(default='',max_length=1500)
+    model: str | None = Field(default=None, min_length=1, max_length=160)
     additional_png_base64: list[Annotated[str, Field(min_length=10, max_length=12_000_000)]] = Field(
         default_factory=list, max_length=3
     )
@@ -86,10 +88,27 @@ class Edit3DIn(BaseModel):
     mesh_glb_base64: str=Field(min_length=10,max_length=28_000_000)
 
 
+def image_models() -> list[str]:
+    default = os.getenv('OPENAI_IMAGE_MODEL', '').strip() or 'gpt-image-2'
+    extras = os.getenv('EASYKIG_IMAGE_MODELS', '').split(',')
+    return list(dict.fromkeys([default, *(model.strip() for model in extras if model.strip())]))
+
+
+def select_image_model(requested: str | None) -> str:
+    allowed = image_models()
+    if requested is None:
+        return allowed[0]
+    if requested not in allowed:
+        raise HTTPException(status_code=422, detail='Image model is not enabled on this gateway')
+    return requested
+
+
 @app.get('/health')
 async def health():
-    return {'name':'easykig-gateway','status':'ok','version':'0.1.0',
+    models = image_models()
+    return {'name':'easykig-gateway','status':'ok','version':app.version,
             'preview_enabled':bool(os.getenv('OPENAI_IMAGE_API_KEY')),
+            'image_model': models[0], 'image_models': models,
             'mesh_editor_enabled':bool(setting('EDIT3D_UPSTREAM_URL'))}
 
 
@@ -106,7 +125,9 @@ async def finish_preview(inp: PreviewIn):
     white=decode_binary(inp.white_png_base64,PNGSIG,MAX_PNG,'white_png')
     ref=(decode_binary(inp.reference_png_base64,PNGSIG,MAX_PNG,'reference_png')
          if inp.reference_png_base64 else None)
-    image64=await provider_image_edit([white, ref] if ref is not None else [white], finishing_prompt(inp.prompt))
+    image64=await provider_image_edit(
+        [white, ref] if ref is not None else [white], finishing_prompt(inp.prompt), select_image_model(inp.model),
+    )
     return {'image_png_base64':image64,'mode':'image_edit',
             'warning':'Illustrative finish; cannot certify geometry or manufacturability'}
 
@@ -119,7 +140,7 @@ async def transform_reference(inp: ReferenceIn):
         prompt = reference_prompt(inp.stage, inp.prompt)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=f'Reference preset for {inp.stage} is unavailable') from exc
-    image64 = await provider_image_edit([source, *additional], prompt)
+    image64 = await provider_image_edit([source, *additional], prompt, select_image_model(inp.model))
     return {'image_png_base64':image64,'stage':inp.stage,'mode':'image_edit',
             'warning':'Reference design only; not a 3D reconstruction'}
 
@@ -134,7 +155,7 @@ def upstream_binary(value, signature, limit, name):
     return value
 
 
-async def provider_image_edit(images: list[bytes], prompt: str):
+async def provider_image_edit(images: list[bytes], prompt: str, model: str):
     """Minimal image-edit API adapter; requires a provider returning base64 PNG."""
     api_key=os.getenv('OPENAI_IMAGE_API_KEY','')
     if not api_key:
@@ -142,7 +163,6 @@ async def provider_image_edit(images: list[bytes], prompt: str):
     api_base=os.getenv('OPENAI_IMAGE_API_BASE','https://api.openai.com/v1').rstrip('/')
     if urlparse(api_base).scheme!='https':
         raise HTTPException(status_code=500,detail='Image API base must be HTTPS')
-    model=os.getenv('OPENAI_IMAGE_MODEL','gpt-image-2')
     field = 'image' if len(images) == 1 else 'image[]'
     files = [(field, (f'reference_{index}.png', image, 'image/png')) for index, image in enumerate(images, 1)]
     data={'model':model,'prompt':prompt,'size':'1024x1024'}
