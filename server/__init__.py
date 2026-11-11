@@ -1,1 +1,1 @@
-"""Optional inference gateway for KigShell Studio."""
+"""EasyKig inference gateway."""

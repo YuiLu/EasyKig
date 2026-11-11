@@ -2,6 +2,8 @@
 
 目标平台为 Blender 4.5 LTS。插件和网关分别位于 `easykig/` 与 `server/`，安装、配置和部署步骤见 [README](README.md)，请求格式见 [API 文档](docs/API.md)。
 
+[v0.1.0 安装包](https://github.com/YuiLu/EasyKig/releases/tag/v0.1.0) 已发布。GitHub Actions 在推送和 PR 时运行测试，推送与扩展版本一致的 `v*` 标签时发布 ZIP。
+
 ## 已验收
 
 - [x] 用 Blender 4.5.4 构建扩展 ZIP，安装、启用并禁用扩展。禁用后场景属性与操作符已注销。
