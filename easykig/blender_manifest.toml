@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "easykig"
-version = "0.1.1"
+version = "0.1.2"
 name = "EasyKig"
 tagline = "PMX import, kigurumi morph editing and AI product previews"
 maintainer = "EasyKig contributors"

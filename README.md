@@ -1,14 +1,15 @@
 # EasyKig
 
-EasyKig 是 Kigurumi 头壳设计插件，当前使用 Blender 5.1 开发，配套 FastAPI 网关。可编辑模板 Shape Keys、预处理 PMX、渲染白模，并连接图像编辑服务和自建 GLB 编辑服务。头壳几何和 STL 输出为**非制造级**。
+EasyKig 是 Kigurumi 头壳设计插件，当前使用 Blender 5.1 开发，配套 FastAPI 网关。可编辑模板 Shape Keys、预处理 PMX、渲染白模，并连接图像编辑服务和 ShapeUp 图像条件 3D 编辑服务。头壳几何和 STL 输出为**非制造级**。
 
 ## Blender 安装与操作
 
 1. 下载 [EasyKig 扩展 ZIP](https://github.com/YuiLu/EasyKig/releases)，在 Blender 的 **Preferences → Get Extensions → Install from Disk** 安装。也可以从仓库根目录运行 `blender --command extension build --source-dir easykig`。
 2. 在 3D View 按 **N** 打开 **EasyKig**。将 PNG、JPG、JPEG 或 WebP 批量拖入 **References**，也可以用 **Add Images** 多选，最多四张。Blender 弹出导入菜单时选 **Add EasyKig Reference Images**。点缩略图在 Blender 内放大，按 **Esc** 关闭。预览从源图读取，长边最高为 1024 像素，方向按 EXIF 保持。直接在 **Prompt** 的各行输入，或用 **Paste** 粘贴整段多行文字。Prompt 和参考图路径随场景保存。按 **Head → Design → Product** 生成参考图。
 3. **White Clay** 生成 1024×1024 正面白模。改变几何后重新渲染，再点击 **Finish**，将白模和参考图送给生图服务。使用 EasyKig Server 或 ChatGPT API Credits 路径时，多个参考图需要更新后的 EasyKig 网关。面板可切换结果阶段，点击结果缩略图可放大。
-4. 展开 **Modeling Tools** 可创建 **Demo Template** 或使用选中的外部网格。**Preview Collection** 可把集合里的其他网格纳入白模。安装独立的 **MMD Tools 4.x** 后可使用 **PMX and Material Prep**，拆材质会烘焙到新副本。
-5. 在 **Preferences → Add-ons → EasyKig** 配置服务器、请求超时和生图来源。开启 Blender 的 **Allow Online Access** 后，分别使用 **Test EasyKig Server** 和 **Test Image API & Refresh Models** 检查连接。点 **Save Preferences** 后，后续开发版启动会沿用已保存的设置。
+4. 在 **3D Editing** 选择源网格和目标图。可使用 **Finished Preview**、已生成的 Head/Design/Product、原始参考图或 **Image File**。点 **Generate Edited 3D** 提交任务，Blender 保持可操作。状态栏显示排队、推理和下载阶段；关闭监控后可点 **Resume Task** 取回同一任务，结果作为新对象导入。**Stop Waiting / Esc** 只暂停客户端等待，已经接受的服务端任务继续执行。
+5. 展开 **Modeling Tools** 可创建 **Demo Template** 或使用选中的外部网格。**Preview Collection** 可把集合里的其他网格纳入白模。安装独立的 **MMD Tools 4.x** 后可使用 **PMX and Material Prep**，拆材质会烘焙到新副本。
+6. 在 **Preferences → Add-ons → EasyKig** 配置服务器、请求超时和生图来源。开启 Blender 的 **Allow Online Access** 后，分别使用 **Test EasyKig Server** 和 **Test Image API & Refresh Models** 检查连接。点 **Save Preferences** 后，后续开发版启动会沿用已保存的设置。
 
 **Supporting Images** 中三项均为可选。**Face Expression** 给 Head、Design 和 Product 提供表情参考。**Character Color Palette** 给 Head 提供发色、瞳色和角色配色。**Shell Style Example** 给 Design 和 Product 提供头壳结构或成品风格参考。
 
@@ -27,20 +28,57 @@ python -m pip install -r server/requirements.txt
 # Windows PowerShell: Copy-Item server/.env.example server/.env
 ```
 
-在 `server/.env` 设置随机生成的 `EASYKIG_SERVER_TOKEN`。图像预览使用 `OPENAI_IMAGE_API_KEY`、`OPENAI_IMAGE_API_BASE` 和默认模型 `OPENAI_IMAGE_MODEL`。通过 `EASYKIG_IMAGE_MODELS` 添加 Blender 可选择的模型 ID，以逗号分隔。GLB 转发使用 `EASYKIG_EDIT3D_UPSTREAM_URL`（完整端点）和可选的 `EASYKIG_EDIT3D_UPSTREAM_TOKEN`。保存后用以下任一方式启动：
+在 `server/.env` 设置随机生成的 `EASYKIG_SERVER_TOKEN`。图像预览使用 `OPENAI_IMAGE_API_KEY`、`OPENAI_IMAGE_API_BASE` 和默认模型 `OPENAI_IMAGE_MODEL`。通过 `EASYKIG_IMAGE_MODELS` 添加 Blender 可选择的模型 ID，以逗号分隔。3D 后端通过 `EASYKIG_EDIT3D_BACKEND=generic|shapeup` 选择。`generic` 使用 `EASYKIG_EDIT3D_UPSTREAM_URL` 的完整 JSON 端点；`shapeup` 使用 ShapeUp 服务根地址。上游令牌可用 `EASYKIG_EDIT3D_UPSTREAM_TOKEN` 或服务端的 `EASYKIG_EDIT3D_UPSTREAM_TOKEN_FILE` 配置。保存后用以下任一方式启动：
 
 ```bash
-python -m uvicorn server.app:app --env-file server/.env --host 127.0.0.1 --port 8000
+python -m uvicorn server.app:app --env-file server/.env --host 127.0.0.1 --port 8001
 docker compose up --build -d
 ```
 
-两种启动方式都默认通过 `http://127.0.0.1:8000` 访问。如果 EasyKig 在 SSH 容器内的 8000 端口运行，可以在本机开一个终端建立隧道：
+两种启动方式都默认通过 `http://127.0.0.1:8001` 访问。如果 EasyKig 在 SSH 容器内的 8001 端口运行，可以在本机开一个终端建立隧道：
 
 ```powershell
-ssh -NT -o ExitOnForwardFailure=yes -p 35995 -L 127.0.0.1:8000:127.0.0.1:8000 user@magic-lab.tech
+ssh -NT -o ExitOnForwardFailure=yes -p 35995 -L 127.0.0.1:8001:127.0.0.1:8001 user@magic-lab.tech
 ```
 
-`35995` 是示例 SSH 端口。用实际用户名替换 `user`，保持终端开启，Blender 的服务器地址填 `http://127.0.0.1:8000`。有单独部署的 HTTPS 反向代理时，可以填它提供的 EasyKig HTTPS 地址。Blender 使用 `EASYKIG_SERVER_TOKEN`，上游令牌配置在网关。尚未接入 GLB 服务时，`/v1/edit3d` 返回 501。接口见 [API 文档](docs/API.md)。
+`35995` 是示例 SSH 端口。用实际用户名替换 `user`，保持终端开启，Blender 的服务器地址填 `http://127.0.0.1:8001`。有单独部署的 HTTPS 反向代理时，可以填它提供的 EasyKig HTTPS 地址。Blender 使用 `EASYKIG_SERVER_TOKEN`，上游令牌配置在网关。尚未接入 GLB 服务时，`/v1/edit3d` 返回 501。接口见 [API 文档](docs/API.md)。
+
+### 当前机器的 ShapeUp 对接
+
+EasyKig 网关已部署到 `http://127.0.0.1:8001`，由 Supervisor 托管；ShapeUp 保持在 8000。
+关闭终端、断开 SSH 不会停止服务，容器重启时沿用已安装的 Supervisor 启动流程。
+
+```bash
+supervisorctl status easykig shapeup
+supervisorctl restart easykig
+tail -f /data/EasyKig/runtime/gateway.log
+```
+
+Blender 的服务器地址填 `http://127.0.0.1:8001`，**Server Token** 使用
+`/data/EasyKig/runtime/api-token` 中的内容。另一台机器需要先建立到当前 SSH 容器的隧道：
+
+```bash
+ssh -NT -o ExitOnForwardFailure=yes -L 127.0.0.1:8001:127.0.0.1:8001 your-ssh-alias
+```
+
+ShapeUp 的私有令牌只由网关读取，Blender 不需要填写它。图像生成仍沿用原有图像 API 配置；
+只使用现有目标图做 3D 编辑不需要图像 API Key。
+
+在同样的 `/data/ShapeUp` 部署旁重新安装网关，可以执行：
+
+```bash
+bash /data/EasyKig/scripts/install-gateway.sh
+```
+
+ShapeUp 根据**源网格和目标图像**进行编辑，不支持只用文字从零生成三维。
+插件会烘焙源网格当前 Shape Keys/修改器到上传副本，并将场景单位转换为 glTF 的米。
+网关还原 ShapeUp 输出的归一化坐标后，Blender 再导入新网格；原网格及其 Shape Keys 保留。
+新结果有独立拓扑，不继承原有 Shape Keys，编辑也不会保证保留眼孔或制造结构。
+
+任务 ID 保存在场景设置和预览目录的 `mesh_job.json` 中。断网、暂停等待或重新打开已保存
+的场景后，可通过 **Resume Task** 查询并下载同一任务，无须重复生成。网关端的恢复信息
+保存在 `EASYKIG_EDIT3D_JOB_DIR`，Compose 使用持久卷保存该目录。
+GPU 模型只在 ShapeUp 的任务子进程中加载，任务结束后释放显存；网关和插件网络线程不加载 GPU 模型。
 
 ### 切换生图来源与模型
 
@@ -71,6 +109,8 @@ ssh -NT -o ExitOnForwardFailure=yes -p 35995 -L 127.0.0.1:8000:127.0.0.1:8000 us
 ```bash
 python -m pip install pytest
 python -m pytest -q
+# 可选：Blender 5.1 的真实导出/异步网关/恢复/导入检查（使用模拟推理上游，无 GPU 负载）
+python scripts/smoke-shapeup.py --blender /path/to/blender
 ```
 
 见 [交接记录](WORK_HANDOFF.md)。PMX 导入调用独立安装的 MMD Tools。EasyKig 源码许可见 [LICENSE](LICENSE)。

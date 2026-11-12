@@ -1,10 +1,11 @@
-# EasyKig Gateway API v0.1
+# EasyKig Gateway API v0.1.2
 
-默认网关地址：`http://127.0.0.1:8000`，对所有 POST 接口发送 `Authorization: Bearer <EASYKIG_SERVER_TOKEN>`。
+默认网关地址：`http://127.0.0.1:8001`，对所有 POST 接口发送 `Authorization: Bearer <EASYKIG_SERVER_TOKEN>`。
 
 ## `GET /health`
 
 无需鉴权。返回 `status`、`version`、`preview_enabled` 和 `mesh_editor_enabled`。后两个字段表示已配置相应凭据或上游地址。
+3D 能力字段包括 `mesh_editor_backend`（`generic|shapeup`）、`mesh_editor_async` 和 `mesh_editor_requires_image`。这些是配置能力；ShapeUp 实际就绪状态通过鉴权的 `GET /v1/edit3d/health` 检查。
 同时返回 `image_model`（默认模型）和 `image_models`（允许选择的模型 ID 列表）。
 
 ## `GET /v1/image/models`
@@ -72,7 +73,64 @@
 }
 ```
 
-目前仅转发到 `EASYKIG_EDIT3D_UPSTREAM_URL`，没有现成的几何模型。未配置时返回 501。你的远端 inference server 只需实现 **同一请求/响应 JSON 协议**，网关即可转发。所有图片/模型上传均由 Blender UI 中的明确点击触发。
+此同步接口保留 `generic` 后端原有的文字 + GLB 协议。设置
+`EASYKIG_EDIT3D_BACKEND=shapeup` 时返回 409，指引客户端使用下面的图像条件异步任务。
+未配置上游时返回 501。
+
+## ShapeUp 后端配置
+
+```dotenv
+EASYKIG_EDIT3D_BACKEND=shapeup
+EASYKIG_EDIT3D_UPSTREAM_URL=http://127.0.0.1:8000
+EASYKIG_EDIT3D_UPSTREAM_TOKEN_FILE=/data/ShapeUp/runtime/api-token
+EASYKIG_EDIT3D_JOB_DIR=runtime/edit3d-jobs
+```
+
+上游 URL 和凭据由服务器配置，客户端不能指定。HTTP 仅允许 localhost/SSH 隧道；其他地址使用 HTTPS。
+也可用 `EASYKIG_EDIT3D_UPSTREAM_TOKEN` 直接配置上游令牌，它优先于令牌文件。
+
+## `GET /v1/edit3d/health`
+
+需要网关 Bearer Token。检查 ShapeUp 的 `/readyz`，就绪时返回 200 和
+`{"backend":"shapeup","ready":true,...}`。GPU/权重未就绪返回 503，上游凭据错误返回 502。
+
+## `POST /v1/edit3d/jobs`
+
+需要网关 Bearer Token。请求示例：
+
+```json
+{
+  "mesh_glb_base64": "<source GLB, max 20 MiB>",
+  "edit_png_base64": "<target PNG, max 8 MiB>",
+  "seed": 10,
+  "steps": 30,
+  "watertight_resolution": 512
+}
+```
+
+`seed` 默认 10，范围 0–4294967295；`steps` 默认 30，范围 1–100；
+`watertight_resolution` 为 128、256 或 512。文字 `prompt` 可以保留作为客户端输入，
+ShapeUp 由目标图像引导，不使用文字条件。此接口不会额外调用图像生成 API。
+
+网关校验输入，将 GLB 和目标 PNG 作为 multipart 文件转发到 ShapeUp 的 `/jobs`，
+返回 HTTP 202：`{"id":"<32位十六进制任务ID>","status":"queued","backend":"shapeup"}`。
+上游队列满返回 429。网关保存源 GLB 的中心和尺度，用于恢复结果坐标。
+
+## `GET /v1/edit3d/jobs/{id}`
+
+需要网关 Bearer Token。返回 `id`、`status`、可用的时间戳、失败时的 `error` 与 `backend`。
+状态为 `queued`、`running`、`succeeded`、`failed`。任务只在 POST 时提交；
+查询、恢复等待和重复下载不会重新触发 GPU 生成。未知任务返回 404，非法 ID 返回 422。
+
+## `GET /v1/edit3d/jobs/{id}/result`
+
+需要网关 Bearer Token。未完成时返回 409；成功时返回二进制 `model/gltf-binary`，
+最大 20 MiB。网关在 CPU 上还原 ShapeUp 的 bbox 中心/尺度，并保留贴图。
+输入 GLB 应符合 glTF 的米单位约定；Blender 插件负责场景单位换算。
+结果坐标系与上传源模型一致，具体编辑仍可改变形状和尺寸。
+
+暂停客户端等待不会取消上游任务。任务状态保存在 ShapeUp；网关的中心/尺度恢复信息
+保存在 `EASYKIG_EDIT3D_JOB_DIR`，需与后端任务数据一起保留，便于重启后恢复。
 
 ## 设计与安全边界
 
@@ -80,4 +138,4 @@
 - 反向代理应限制请求体大小和超时，并配置 HTTPS 与鉴权。
 - 网关仅在环境变量指定的 API/上游 URL 上发起请求；远端地址不由 Blender 上传参数控制，避免任意 SSRF。
 - `Authorization` 令牌保存在用户本机 Blender 偏好设置，建议通过 HTTPS 或 SSH 隧道使用。
-- 当前编辑是同步 HTTP；生产环境应增加异步任务队列、任务 ID、结果持久化和重试。
+- ShapeUp 编辑使用异步任务队列；旧 generic 编辑接口保持同步 HTTP。网关、插件均不常驻 GPU 模型。

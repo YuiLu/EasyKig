@@ -6,8 +6,8 @@ Contracts:
   POST /v1/preview/finish
   POST /v1/edit3d
 
-Preview requires OPENAI_IMAGE_API_KEY; 3D mesh editing requires a separately deployed
-compatible upstream service at EASYKIG_EDIT3D_UPSTREAM_URL. Both are opt-in.
+Preview requires OPENAI_IMAGE_API_KEY. 3D editing uses either a compatible generic
+upstream or ShapeUp's image-conditioned job queue; both are opt-in.
 """
 import base64
 import hmac
@@ -15,17 +15,19 @@ import os
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 import httpx
 
 from .prompts import finishing_prompt, reference_prompt
 from .shape_rules import propose_edits
+from .shapeup import ShapeUp, backend as edit3d_backend
 
 MAX_PNG=8*1024*1024
 MAX_GLB=20*1024*1024
 PNGSIG=b'\x89PNG\r\n\x1a\n'
 
-app=FastAPI(title='EasyKig Remote Gateway',version='0.1.1',docs_url=None,redoc_url=None)
+app=FastAPI(title='EasyKig Remote Gateway',version='0.1.2',docs_url=None,redoc_url=None)
 
 
 def setting(name: str, default: str = '') -> str:
@@ -96,8 +98,12 @@ class ReferencePromptIn(BaseModel):
 
 
 class Edit3DIn(BaseModel):
-    prompt: str=Field(min_length=1,max_length=1500)
+    prompt: str=Field(default='',max_length=1500)
     mesh_glb_base64: str=Field(min_length=10,max_length=28_000_000)
+    edit_png_base64: str|None=Field(default=None,max_length=12_000_000)
+    seed: int=Field(default=10,ge=0,le=2**32-1)
+    steps: int=Field(default=30,ge=1,le=100)
+    watertight_resolution: Literal[128,256,512]=512
 
 
 def image_models() -> list[str]:
@@ -191,7 +197,10 @@ async def health():
             'multi_reference_images': True,
             'image_providers': {'gateway': bool(os.getenv('OPENAI_IMAGE_API_KEY')),
                                 'chatgpt_credits': bool(os.getenv('OPENAI_SUBSCRIPTION_API_KEY'))},
-            'mesh_editor_enabled':bool(setting('EDIT3D_UPSTREAM_URL'))}
+            'mesh_editor_enabled':bool(setting('EDIT3D_UPSTREAM_URL')),
+            'mesh_editor_backend':edit3d_backend(),
+            'mesh_editor_async':edit3d_backend()=='shapeup',
+            'mesh_editor_requires_image':edit3d_backend()=='shapeup'}
 
 
 @app.get('/v1/image/models', dependencies=[Depends(require_auth)])
@@ -296,6 +305,10 @@ async def provider_image_edit(images: list[bytes], prompt: str, model: str, prov
 
 @app.post('/v1/edit3d',dependencies=[Depends(require_auth)])
 async def edit_mesh(inp: Edit3DIn):
+    if edit3d_backend() == 'shapeup':
+        raise HTTPException(409, detail='ShapeUp uses image-conditioned async jobs. Update the add-on and use /v1/edit3d/jobs.')
+    if not inp.prompt.strip():
+        raise HTTPException(422, detail='The generic 3D editor requires a text prompt')
     decode_binary(inp.mesh_glb_base64,b'glTF',MAX_GLB,'mesh_glb')
     upstream=setting('EDIT3D_UPSTREAM_URL','').strip()
     if not upstream:
@@ -310,7 +323,8 @@ async def edit_mesh(inp: Edit3DIn):
             upstream_key=setting('EDIT3D_UPSTREAM_TOKEN','')
             if upstream_key:
                 headers['Authorization']='Bearer '+upstream_key
-            resp=await client.post(upstream,headers=headers,json=inp.model_dump())
+            payload={'prompt':inp.prompt,'mesh_glb_base64':inp.mesh_glb_base64}
+            resp=await client.post(upstream,headers=headers,json=payload)
             resp.raise_for_status()
         except httpx.TimeoutException as exc:
             raise HTTPException(status_code=504, detail='3D upstream timed out') from exc
@@ -321,3 +335,37 @@ async def edit_mesh(inp: Edit3DIn):
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=502, detail='3D editor did not return mesh_glb_base64') from exc
     return {'mesh_glb_base64': upstream_binary(edited, b'glTF', MAX_GLB, 'edited_glb'), 'mode': 'upstream'}
+
+
+def shapeup_backend():
+    if edit3d_backend() != 'shapeup':
+        raise HTTPException(501, 'Async 3D jobs require EASYKIG_EDIT3D_BACKEND=shapeup')
+    return ShapeUp()
+
+
+@app.get('/v1/edit3d/health',dependencies=[Depends(require_auth)])
+async def edit3d_health():
+    return await shapeup_backend().readiness()
+
+
+@app.post('/v1/edit3d/jobs',status_code=202,dependencies=[Depends(require_auth)])
+async def submit_edit3d_job(inp: Edit3DIn):
+    service=shapeup_backend()
+    mesh=decode_binary(inp.mesh_glb_base64,b'glTF',MAX_GLB,'mesh_glb')
+    if not inp.edit_png_base64:
+        raise HTTPException(422, 'ShapeUp requires a target edit image; choose a generated preview or PNG image')
+    image=decode_binary(inp.edit_png_base64,PNGSIG,MAX_PNG,'edit_png')
+    return await service.submit(mesh,image,seed=inp.seed,steps=inp.steps,
+                                watertight_resolution=inp.watertight_resolution)
+
+
+@app.get('/v1/edit3d/jobs/{job_id}',dependencies=[Depends(require_auth)])
+async def edit3d_job_status(job_id: str):
+    return await shapeup_backend().status(job_id)
+
+
+@app.get('/v1/edit3d/jobs/{job_id}/result',dependencies=[Depends(require_auth)])
+async def edit3d_job_result(job_id: str):
+    raw=await shapeup_backend().result(job_id)
+    return Response(raw,media_type='model/gltf-binary',
+                    headers={'Content-Disposition':f'attachment; filename="easykig-{job_id}.glb"'})

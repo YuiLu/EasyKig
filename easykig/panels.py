@@ -4,6 +4,7 @@ import bpy
 
 from . import image_preview
 from .properties import MAX_REFERENCE_IMAGES, PROMPT_FIELDS, get_image_prompt, image_prompt_rows
+from .mesh_operators import target_image
 
 
 def _thumbnail_row(layout, context, owner, property_name, filename, scale=7.0):
@@ -120,6 +121,53 @@ class EASYKIG_PT_main(bpy.types.Panel):
         layout.label(text='Design prototype only', icon='INFO')
 
 
+class EASYKIG_PT_mesh_generation(bpy.types.Panel):
+    bl_label = '3D Editing'
+    bl_idname = 'EASYKIG_PT_mesh_generation'
+    bl_parent_id = 'EASYKIG_PT_main'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'EasyKig'
+
+    def draw(self, context):
+        settings = context.scene.easykig_settings
+        layout = self.layout
+        inputs = layout.column(align=True)
+        inputs.enabled = not settings.mesh_job_running
+        inputs.prop(settings, 'face', text='Source Mesh')
+        inputs.operator('easykig.pick_face', text='Use Selected Mesh')
+        inputs.prop(settings, 'mesh_edit_source')
+        if settings.mesh_edit_source == 'file':
+            inputs.prop(settings, 'mesh_edit_image', text='')
+        else:
+            path = target_image(settings)
+            inputs.label(text=Path(path).name if path else 'Generate or choose a target image first', icon='IMAGE_DATA')
+        inputs.label(text='ShapeUp uses the target image to edit the mesh.')
+        header, options = inputs.panel('EASYKIG_mesh_options', default_closed=True)
+        header.label(text='Sampling Options')
+        if options:
+            options.prop(settings, 'mesh_edit_seed')
+            options.prop(settings, 'mesh_edit_steps')
+            options.prop(settings, 'mesh_edit_resolution')
+        row = layout.row(align=True)
+        start = row.row(align=True)
+        start.enabled = not settings.mesh_job_running and bool(settings.face) and context.mode == 'OBJECT'
+        start.operator('easykig.remote_mesh_edit', text='Generate Edited 3D', icon='MESH_DATA')
+        resume = row.row(align=True)
+        resume.enabled = not settings.mesh_job_running
+        resume.operator('easykig.resume_mesh_job', text='Resume Task')
+        if settings.mesh_job_running:
+            layout.operator('easykig.stop_mesh_wait', icon='PAUSE')
+        layout.label(text='Status: ' + settings.mesh_job_status)
+        if settings.mesh_job_id:
+            layout.prop(settings, 'mesh_job_id', text='Task ID')
+        if settings.mesh_job_message:
+            for line in settings.mesh_job_message.splitlines()[:3]:
+                layout.label(text=line[:110])
+        if settings.mesh_result_glb:
+            layout.operator('easykig.import_mesh_result', text='Import Saved Result', icon='IMPORT')
+
+
 class EASYKIG_PT_modeling(bpy.types.Panel):
     bl_label = 'Modeling Tools'
     bl_idname = 'EASYKIG_PT_modeling'
@@ -175,16 +223,17 @@ class EASYKIG_PT_modeling(bpy.types.Panel):
         remote = layout.column(align=True)
         remote.prop(settings, 'editing_prompt', text='Edit Prompt')
         remote.operator('easykig.ai_morph', text='Apply to Shape Keys')
-        remote.operator('easykig.remote_mesh_edit', text='Edit Mesh (GLB)')
 
 
 def register():
     image_preview.register()
     bpy.utils.register_class(EASYKIG_PT_main)
+    bpy.utils.register_class(EASYKIG_PT_mesh_generation)
     bpy.utils.register_class(EASYKIG_PT_modeling)
 
 
 def unregister():
     bpy.utils.unregister_class(EASYKIG_PT_modeling)
+    bpy.utils.unregister_class(EASYKIG_PT_mesh_generation)
     bpy.utils.unregister_class(EASYKIG_PT_main)
     image_preview.unregister()

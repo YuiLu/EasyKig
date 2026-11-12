@@ -1,7 +1,7 @@
 import textwrap
 
 import bpy
-from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
 from .image_preview import extra_preview_items, reference_preview_items, result_preview_items
 
 
@@ -93,11 +93,12 @@ class EASYKIG_AddonPreferences(bpy.types.AddonPreferences):
     server_url: StringProperty(
         name="3D Editing Server URL",
         description="Remote server root, e.g. https://your-domain.example. Never include credentials in URL",
-        default="http://127.0.0.1:8000",
+        default="http://127.0.0.1:8001",
         update=clear_image_catalog,
     )
     server_token: StringProperty(name="Server Token", subtype="PASSWORD", default="", update=clear_image_catalog)
     timeout_seconds: FloatProperty(name="Request Timeout (s)", default=360, min=5, max=600)
+    mesh_timeout_seconds: FloatProperty(name='3D Job Wait Timeout (s)', default=7200, min=60, max=14400)
     image_provider: EnumProperty(
         name="Image Provider",
         items=[
@@ -161,6 +162,7 @@ class EASYKIG_AddonPreferences(bpy.types.AddonPreferences):
         col.operator('easykig.refresh_image_models', text='Test Image API & Refresh Models', icon='FILE_REFRESH')
         col = self.layout.column(align=True)
         col.prop(self, "timeout_seconds")
+        col.prop(self, "mesh_timeout_seconds")
         col.prop(self, "preview_directory")
         col.operator('wm.save_userpref', text='Save Preferences', icon='CHECKMARK')
 
@@ -198,6 +200,25 @@ class EASYKIG_Settings(bpy.types.PropertyGroup):
     )
     image_prompt_text: PointerProperty(name='Image Prompt', type=bpy.types.Text)
     editing_prompt: StringProperty(name="Shape Edit Instruction", default="Rounder cheeks and larger eyes")
+    mesh_edit_source: EnumProperty(
+        name='Target Image', default='finished',
+        items=[('finished', 'Finished Preview', 'Use the finished clay-view edit as the desired shape and appearance'),
+               ('design', 'Design Reference', 'Use the generated kigurumi design'),
+               ('product', 'Product Reference', 'Use the generated product image'),
+               ('head', 'Head Reference', 'Use the generated head reference'),
+               ('reference', 'Original Reference', 'Use the first reference image'),
+               ('file', 'Image File', 'Choose a target edit image from disk')])
+    mesh_edit_image: StringProperty(name='3D Edit Image', subtype='FILE_PATH')
+    mesh_edit_seed: IntProperty(name='Seed', default=10, min=0, max=2147483647)
+    mesh_edit_steps: IntProperty(name='Geometry Steps', default=30, min=1, max=100)
+    mesh_edit_resolution: EnumProperty(name='Watertight Resolution', default='512',
+        items=[('128', '128', 'Fastest mesh preparation'), ('256', '256', 'Lower preparation memory'),
+               ('512', '512', 'Default ShapeUp quality; higher GPU memory while preparing')])
+    mesh_job_id: StringProperty(name='3D Task ID')
+    mesh_job_status: StringProperty(name='3D Status', default='idle', options={'SKIP_SAVE'})
+    mesh_job_message: StringProperty(name='3D Message', options={'SKIP_SAVE'})
+    mesh_job_running: BoolProperty(default=False, options={'SKIP_SAVE'})
+    mesh_result_glb: StringProperty(name='Edited GLB', subtype='FILE_PATH')
     last_head_png: StringProperty(name="Head Reference", default="")
     last_design_png: StringProperty(name="Kigurumi Design", default="")
     last_product_png: StringProperty(name="Product Reference", default="")

@@ -323,6 +323,9 @@ class EASYKIG_OT_health(bpy.types.Operator):
             prefs = _prefs(context)
             info = request_json(prefs, '/health')
             mesh = 'configured' if info.get('mesh_editor_enabled') else 'not configured'
+            if info.get('mesh_editor_backend') == 'shapeup' and info.get('mesh_editor_enabled'):
+                ready = request_json(_prefs(context), '/v1/edit3d/health', authenticated=True)
+                mesh = 'ShapeUp ready' if ready.get('ready') else 'ShapeUp not ready'
             self.report({'INFO'}, f"EasyKig Server: {info.get('status', 'unknown')} | 3D editor: {mesh}")
             return {'FINISHED'}
         except Exception as exc:
@@ -542,60 +545,6 @@ class EASYKIG_OT_render_finished(bpy.types.Operator):
             return _notify_failure(self,exc)
 
 
-class EASYKIG_OT_remote_mesh_edit(bpy.types.Operator):
-    bl_idname='easykig.remote_mesh_edit'
-    bl_label='Send Mesh to Remote 3D Editor'
-    bl_description='Explicitly upload selected mesh as GLB, import the edited GLB as a new object'
-    def execute(self,context):
-        try:
-            obj=_face(context)
-            old_selection=list(context.selected_objects)
-            old_active=context.view_layer.objects.active
-            with tempfile.TemporaryDirectory(prefix='easykig_remote_') as tmp:
-                upload=str(Path(tmp)/'input.glb')
-                local=str(Path(tmp)/'output.glb')
-                try:
-                    bpy.ops.object.select_all(action='DESELECT')
-                    obj.select_set(True)
-                    context.view_layer.objects.active=obj
-                    result = bpy.ops.export_scene.gltf(filepath=upload,export_format='GLB',use_selection=True,export_apply=True)
-                    if 'FINISHED' not in result:
-                        raise RuntimeError('GLB export was cancelled')
-                finally:
-                    bpy.ops.object.select_all(action='DESELECT')
-                    for item in old_selection:
-                        if item.name in bpy.data.objects:
-                            item.select_set(True)
-                    if old_active and old_active.name in bpy.data.objects:
-                        context.view_layer.objects.active=old_active
-                raw=Path(upload).read_bytes()
-                if len(raw)>20*1024*1024:
-                    raise ValueError('Mesh GLB is over 20 MB; simplify before uploading')
-                result=request_json(_prefs(context),'/v1/edit3d',{
-                    'prompt':_settings(context).editing_prompt,
-                    'mesh_glb_base64':base64.b64encode(raw).decode('ascii'),
-                })
-                glb=base64.b64decode(result['mesh_glb_base64'],validate=True)
-                if not glb.startswith(b'glTF'):
-                    raise ValueError('Remote server did not return a GLB')
-                Path(local).write_bytes(glb)
-                existing=set(bpy.data.objects)
-                result = bpy.ops.import_scene.gltf(filepath=local)
-                if 'FINISHED' not in result:
-                    raise RuntimeError('Blender could not import the returned GLB')
-                imported=list(set(bpy.data.objects)-existing)
-                for candidate in imported:
-                    if candidate.type=='MESH':
-                        candidate['easykig_role']='remote_edited_mesh'
-                ranked=rank_face_objects(imported)
-                if ranked:
-                    _settings(context).face=ranked[0]
-                self.report({'INFO'},f'Remote edit returned {len(imported)} object(s); original intact')
-                return {'FINISHED'}
-        except Exception as exc:
-            return _notify_failure(self,exc)
-
-
 _CLASSES = (
     EASYKIG_OT_import_pmx,EASYKIG_OT_pick_face,EASYKIG_OT_guess_face,
     EASYKIG_OT_split_materials,EASYKIG_OT_make_working_copy,EASYKIG_OT_create_demo,
@@ -604,7 +553,7 @@ _CLASSES = (
     EASYKIG_OT_health,EASYKIG_OT_refresh_image_models,EASYKIG_OT_ai_morph,EASYKIG_OT_set_reference,EASYKIG_FH_reference,
     EASYKIG_OT_paste_image_prompt,EASYKIG_OT_reference_design,
     EASYKIG_OT_render_white,
-    EASYKIG_OT_render_finished,EASYKIG_OT_remote_mesh_edit,
+    EASYKIG_OT_render_finished,
 )
 
 

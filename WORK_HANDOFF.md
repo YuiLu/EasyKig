@@ -2,11 +2,22 @@
 
 当前开发和验证使用 Blender 5.1。插件和网关分别位于 `easykig/` 与 `server/`，安装、配置和部署步骤见 [README](README.md)，请求格式见 [API 文档](docs/API.md)。
 
+v0.1.2 新增 ShapeUp 异步 3D 编辑：源网格 + 目标图提交、任务状态、暂停等待与恢复、结果导入。
+网关恢复 ShapeUp 的归一化坐标，插件在临时副本上烘焙 Shape Keys 并换算 glTF 米单位。
+原有 generic 文字 + GLB 上游接口继续保留。本机网关使用 8001，ShapeUp 使用 8000。
+
 [扩展安装包](https://github.com/YuiLu/EasyKig/releases) 由 GitHub Actions 发布。推送和 PR 会运行测试，推送与扩展版本一致的 `v*` 标签时发布 ZIP。
 
 v0.1.1 将服务配置、图像模型和预览目录设置放到扩展偏好。侧栏默认展示参考图、Prompt、生成操作和结果缩略图，建模工具默认折叠。
 
 ## 已验收
+
+- [x] 30 项 Python 测试通过，包含 ShapeUp multipart 桥接、输入校验、错误状态、坐标恢复、任务持久化、客户端恢复和旧 generic 协议。
+- [x] Blender 5.1.2 构建并验证 v0.1.2 扩展 ZIP，以 `bl_ext.easykig_smoke.easykig` 命名空间启用、执行和禁用。
+- [x] Blender 5.1.2 完整导出 → 模拟上游异步任务 → 暂停/恢复 → 下载/导入检查通过；源 Shape Keys 和毫米场景的世界坐标尺寸保持。恢复未重复提交任务。
+- [x] 本机 EasyKig 网关通过实际 ShapeUp 跑完自带 fox 样例（geometry 30 steps、watertight 128、完整 texture），返回约 4.7 MB 带贴图 GLB。
+- [x] 重启 EasyKig 网关后，使用同一实际任务 ID 重新下载成功。任务完成后 GPU 显存回到运行前水平。
+- [x] 网关已加入现有 Supervisor 托管，与 ShapeUp 共用容器启动流程，空闲不加载 GPU 模型。
 
 - [x] 用 Blender 4.5.4 构建扩展 ZIP，安装、启用并禁用扩展。禁用后场景属性与操作符已注销。
 - [x] 演示模板提供 8 个可编辑 Shape Keys。外部网格的相对 Shape Keys 可读取，基底改名后也能正确识别。多对象集合可参与白模渲染。
@@ -22,6 +33,6 @@ v0.1.1 将服务配置、图像模型和预览目录设置放到扩展偏好。�
 - [ ] 在 Blender 中用两个授权的实际 Kig 模板验证 Shape Keys 和多对象组合。当前验证用的是自制网格。
 - [ ] 使用授权的实际 PMX 核对材质名、脸部识别和 Morph 差异。当前 PMX 验收使用自制文件。
 - [ ] 用可用图像额度生成 `finished_*.png`，人工确认与白模的角度、轮廓和五官一致。当前真实图片编辑请求收到供应商 HTTP 429。
-- [ ] 将自建推理服务的真实 HTTPS 端点和令牌配置到网关，再跑一次 GLB 编辑。当前 HTTPS 验收使用本机测试上游。
+- [ ] 在另一台实际 Blender 客户端通过 SSH 隧道或 HTTPS，使用授权 Kig 模板完成人工目视验收。本机已完成实际 ShapeUp 推理与模拟上游的 Blender 端自动验收。
 - [ ] 在实际部署机运行 Docker Compose。
 - [ ] 眼孔保护、内壳和后壳、壁厚与制造验证。面板标注为非制造级，文字调参为规则式。

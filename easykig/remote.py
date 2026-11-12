@@ -1,14 +1,10 @@
-"""Small synchronous HTTP adapter for explicit user-triggered Blender operators.
+"""Image and parameter request helpers for explicit Blender operators.
 
-Blender operator calls are blocking in this MVP; do not invoke from draw(), timers or handlers.
+Long 3D jobs use the bpy-free background client in mesh_jobs instead.
 """
 import base64
 import json
-import socket
 import tempfile
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 import bpy
 
@@ -18,22 +14,7 @@ REFERENCE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp')
 PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-def _normalize_url(base_url):
-    parsed = urllib.parse.urlparse(base_url.strip().rstrip("/"))
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        raise ValueError("Server URL must be a valid http(s) URL")
-    # On a remote host require transport encryption. Local SSH port forwarding remains supported.
-    local = parsed.hostname in ("localhost", "127.0.0.1", "::1")
-    if parsed.scheme != "https" and not local:
-        raise ValueError("Use HTTPS for remote servers, or tunnel to 127.0.0.1")
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError("Server URL must not contain credentials, queries or fragments")
-    return base_url.strip().rstrip("/")
+from .http_client import NoRedirect, normalize_url as _normalize_url, http_json as _http_json
 
 
 def request_json(prefs, path, payload=None, method=None, *, authenticated=False):
@@ -50,24 +31,7 @@ def request_json(prefs, path, payload=None, method=None, *, authenticated=False)
 def http_json(url, timeout, headers, data=None, method=None):
     if not bpy.app.online_access:
         raise RuntimeError("Enable Allow Online Access in Blender Preferences to use the server")
-    request = urllib.request.Request(url, data=data, headers=headers, method=method or ("POST" if data is not None else "GET"))
-    try:
-        opener = urllib.request.build_opener(NoRedirect)
-        with opener.open(request, timeout=float(timeout)) as response:
-            limit = 33 * 1024 * 1024
-            body = response.read(limit + 1)
-            if len(body) > limit:
-                raise RuntimeError("Server response exceeds the supported size")
-            return json.loads(body)
-    except urllib.error.HTTPError as exc:
-        details = exc.read(1000).decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {details}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Cannot connect to server: {exc.reason}") from exc
-    except socket.timeout as exc:
-        raise RuntimeError("The server request timed out. Check the server or increase Request Timeout.") from exc
-    except (ValueError, OSError) as exc:
-        raise RuntimeError(f"Could not read the server response: {exc}") from exc
+    return _http_json(url, timeout, headers, data, method)
 
 
 def validate_reference_image(filepath):

@@ -7,5 +7,10 @@ services:
       - ./server/.env
     ports:
       # Keep port local; use SSH tunnel or HTTPS reverse proxy for remote clients.
-      - '127.0.0.1:8000:8000'
+      - '127.0.0.1:8001:8000'
     restart: unless-stopped
+    volumes:
+      - easykig_jobs:/app/runtime/edit3d-jobs
+
+volumes:
+  easykig_jobs:
