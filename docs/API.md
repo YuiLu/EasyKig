@@ -7,6 +7,10 @@
 无需鉴权。返回 `status`、`version`、`preview_enabled` 和 `mesh_editor_enabled`。后两个字段表示已配置相应凭据或上游地址。
 同时返回 `image_model`（默认模型）和 `image_models`（允许选择的模型 ID 列表）。
 
+## `GET /v1/image/models`
+
+使用网关 Bearer Token 鉴权。查询参数 `provider=gateway|chatgpt_credits`，返回所选来源的 `image_models` 及默认 `image_model`。ChatGPT API credits 路径使用关联 API 组织的项目密钥从 OpenAI 查询模型。
+
 ## `POST /v1/edit/parameters`
 
 请求：
@@ -34,13 +38,19 @@
 
 ## `POST /v1/reference/transform`
 
-请求 `{"stage":"head|design|product","source_png_base64":"...","prompt":"..."}`，响应 `{"image_png_base64":"...","stage":"head|design|product","mode":"image_edit"}`。每张图限 8 MiB PNG。可用 `additional_png_base64` 追加最多 3 张图，按数组顺序发送给供应商。配置 `EASYKIG_REFERENCE_PROMPTS_DIR` 时按阶段发送对应的 UTF-8 预设原文，忽略请求的 `prompt`。图像模型需要 `OPENAI_IMAGE_API_KEY`。
+请求 `{"stage":"head|design|product","source_png_base64":"...","prompt":"..."}`，响应 `{"image_png_base64":"...","stage":"head|design|product","mode":"image_edit"}`。每张图限 8 MiB PNG。可用 `additional_png_base64` 追加最多 6 张图，按数组顺序发送给供应商。配置 `EASYKIG_REFERENCE_PROMPTS_DIR` 时按阶段发送对应的 UTF-8 预设原文，忽略请求的 `prompt`。图像模型需要 `OPENAI_IMAGE_API_KEY`。
+
+## `POST /v1/image/reference-prompt`
+
+请求 `{"stage":"head|design|product","prompt":"..."}`，响应 `{"prompt":"..."}`。使用和 `/v1/reference/transform` 相同的预设加载逻辑。Blender 直连图像 API 时可以单独取得 Prompt。
 
 ## `POST /v1/preview/finish`
 
 请求 `{"white_png_base64":"...","reference_png_base64":"... (optional)","prompt":"..."}`，响应 `{"image_png_base64":"...","mode":"image_edit","warning":"..."}`。源图限 8MB PNG。
 
-两个图像接口都接受可选的 `model`。省略时使用 `OPENAI_IMAGE_MODEL`，指定时须匹配默认模型或 `EASYKIG_IMAGE_MODELS` 中的模型 ID。
+可通过 `additional_png_base64` 提供最多 3 张补充参考图。网关将白模作为第一张图，其余参考图用于配色和风格。`GET /health` 的 `multi_reference_images` 表示网关支持此字段和参考图接口的新上限。
+
+两个图像接口都接受可选的 `provider` 和 `model`。省略 `provider` 时使用网关默认来源。显式选 `chatgpt_credits` 时请求使用 `OPENAI_SUBSCRIPTION_API_KEY`。模型可从 `/v1/image/models` 获取。
 
 ## `POST /v1/edit3d`
 

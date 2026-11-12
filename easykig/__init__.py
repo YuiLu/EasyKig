@@ -9,16 +9,17 @@ bl_info = {
     "category": "3D View",
 }
 
-from . import properties, operators, panels
-
-
 def register():
+    from . import properties, operators, panels
+
     properties.register()
     operators.register()
     panels.register()
 
 
 def unregister():
+    from . import properties, operators, panels
+
     panels.unregister()
     operators.unregister()
     properties.unregister()

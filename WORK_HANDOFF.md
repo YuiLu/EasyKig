@@ -1,6 +1,6 @@
 # EasyKig 开发交接
 
-目标平台为 Blender 4.5 LTS。插件和网关分别位于 `easykig/` 与 `server/`，安装、配置和部署步骤见 [README](README.md)，请求格式见 [API 文档](docs/API.md)。
+当前开发和验证使用 Blender 5.1。插件和网关分别位于 `easykig/` 与 `server/`，安装、配置和部署步骤见 [README](README.md)，请求格式见 [API 文档](docs/API.md)。
 
 [扩展安装包](https://github.com/YuiLu/EasyKig/releases) 由 GitHub Actions 发布。推送和 PR 会运行测试，推送与扩展版本一致的 `v*` 标签时发布 ZIP。
 

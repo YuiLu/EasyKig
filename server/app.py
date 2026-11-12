@@ -12,7 +12,7 @@ compatible upstream service at EASYKIG_EDIT3D_UPSTREAM_URL. Both are opt-in.
 import base64
 import hmac
 import os
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -66,21 +66,33 @@ class EditParametersIn(BaseModel):
     ranges: dict[str,list[float]]=Field(default_factory=dict,max_length=200)
 
 
-class PreviewIn(BaseModel):
-    white_png_base64: str=Field(min_length=10,max_length=12_000_000)
-    reference_png_base64: str|None=Field(default=None,max_length=12_000_000)
-    prompt: str=Field(default='',max_length=1500)
+ImageProvider = Literal['gateway', 'chatgpt_credits']
+EncodedImage = Annotated[str, Field(min_length=10, max_length=12_000_000)]
+OPENAI_API_BASE = 'https://api.openai.com/v1'
+
+
+class ImageRequest(BaseModel):
+    provider: ImageProvider = 'gateway'
     model: str | None = Field(default=None, min_length=1, max_length=160)
 
 
-class ReferenceIn(BaseModel):
+class PreviewIn(ImageRequest):
+    white_png_base64: str=Field(min_length=10,max_length=12_000_000)
+    reference_png_base64: str|None=Field(default=None,max_length=12_000_000)
+    additional_png_base64: list[EncodedImage] = Field(default_factory=list, max_length=3)
+    prompt: str=Field(default='',max_length=1500)
+
+
+class ReferenceIn(ImageRequest):
     source_png_base64: str=Field(min_length=10,max_length=12_000_000)
     stage: str=Field(pattern='^(head|design|product)$')
     prompt: str=Field(default='',max_length=1500)
-    model: str | None = Field(default=None, min_length=1, max_length=160)
-    additional_png_base64: list[Annotated[str, Field(min_length=10, max_length=12_000_000)]] = Field(
-        default_factory=list, max_length=3
-    )
+    additional_png_base64: list[EncodedImage] = Field(default_factory=list, max_length=6)
+
+
+class ReferencePromptIn(BaseModel):
+    stage: Literal['head', 'design', 'product']
+    prompt: str = Field(default='', max_length=1500)
 
 
 class Edit3DIn(BaseModel):
@@ -94,8 +106,74 @@ def image_models() -> list[str]:
     return list(dict.fromkeys([default, *(model.strip() for model in extras if model.strip())]))
 
 
-def select_image_model(requested: str | None) -> str:
-    allowed = image_models()
+def is_openai_image_model(model: str) -> bool:
+    return model == 'chatgpt-image-latest' or (model.startswith('gpt-image-') and model != 'gpt-image-1')
+
+
+def image_credentials(provider: ImageProvider) -> tuple[str, str]:
+    if provider == 'chatgpt_credits':
+        key_var = 'OPENAI_SUBSCRIPTION_API_KEY'
+        api_base = OPENAI_API_BASE
+    else:
+        key_var = 'OPENAI_IMAGE_API_KEY'
+        api_base = os.getenv('OPENAI_IMAGE_API_BASE', OPENAI_API_BASE).rstrip('/')
+    api_key = os.getenv(key_var, '').strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail=f'Set {key_var} to enable this image provider')
+    if urlparse(api_base).scheme != 'https':
+        raise HTTPException(status_code=500, detail='Image API base must be HTTPS')
+    return api_base, api_key
+
+
+async def discover_image_models(provider: ImageProvider) -> list[str]:
+    api_base, key = image_credentials(provider)
+    try:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=False) as client:
+            response = await client.get(api_base + '/models', headers={'Authorization': f'Bearer {key}'})
+            response.raise_for_status()
+            entries = response.json()['data']
+        models = sorted({item['id'] for item in entries if is_openai_image_model(item['id'])})
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail='Image model catalog timed out') from exc
+    except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=502, detail='Could not list OpenAI models. Check the linked project key and its model-read permission.') from exc
+    preferred = 'gpt-image-2.5-sunburst'
+    if preferred in models:
+        models.remove(preferred)
+        models.insert(0, preferred)
+    return models
+
+
+async def image_catalog(provider: ImageProvider) -> list[str]:
+    if provider == 'chatgpt_credits':
+        return await discover_image_models(provider)
+    configured = image_models()
+    if not os.getenv('OPENAI_IMAGE_API_KEY', '').strip():
+        return configured
+    try:
+        discovered = await discover_image_models(provider)
+    except HTTPException:
+        # Some compatible image gateways expose edits without a model catalog.
+        return configured
+    return list(dict.fromkeys([*configured, *discovered]))
+
+
+async def select_image_model(requested: str | None, provider: ImageProvider) -> str:
+    if provider == 'chatgpt_credits' and requested is not None:
+        if not is_openai_image_model(requested):
+            raise HTTPException(status_code=422, detail='Choose an OpenAI image model')
+        return requested
+    if provider == 'gateway':
+        configured = image_models()
+        if requested is None:
+            return configured[0]
+        if requested in configured:
+            return requested
+        if not is_openai_image_model(requested):
+            raise HTTPException(status_code=422, detail='Image model is not enabled on this gateway')
+    allowed = await image_catalog(provider)
+    if not allowed:
+        raise HTTPException(status_code=503, detail='No image models available for this provider')
     if requested is None:
         return allowed[0]
     if requested not in allowed:
@@ -109,7 +187,17 @@ async def health():
     return {'name':'easykig-gateway','status':'ok','version':app.version,
             'preview_enabled':bool(os.getenv('OPENAI_IMAGE_API_KEY')),
             'image_model': models[0], 'image_models': models,
+            'image_catalog': True,
+            'multi_reference_images': True,
+            'image_providers': {'gateway': bool(os.getenv('OPENAI_IMAGE_API_KEY')),
+                                'chatgpt_credits': bool(os.getenv('OPENAI_SUBSCRIPTION_API_KEY'))},
             'mesh_editor_enabled':bool(setting('EDIT3D_UPSTREAM_URL'))}
+
+
+@app.get('/v1/image/models', dependencies=[Depends(require_auth)])
+async def list_image_models(provider: ImageProvider = 'gateway'):
+    models = await image_catalog(provider)
+    return {'provider': provider, 'image_models': models, 'image_model': models[0] if models else None}
 
 
 @app.post('/v1/edit/parameters',dependencies=[Depends(require_auth)])
@@ -125,8 +213,11 @@ async def finish_preview(inp: PreviewIn):
     white=decode_binary(inp.white_png_base64,PNGSIG,MAX_PNG,'white_png')
     ref=(decode_binary(inp.reference_png_base64,PNGSIG,MAX_PNG,'reference_png')
          if inp.reference_png_base64 else None)
+    images = [white, ref] if ref is not None else [white]
+    images.extend(decode_binary(value, PNGSIG, MAX_PNG, 'reference_image') for value in inp.additional_png_base64)
     image64=await provider_image_edit(
-        [white, ref] if ref is not None else [white], finishing_prompt(inp.prompt), select_image_model(inp.model),
+        images, finishing_prompt(inp.prompt),
+        await select_image_model(inp.model, inp.provider), inp.provider,
     )
     return {'image_png_base64':image64,'mode':'image_edit',
             'warning':'Illustrative finish; cannot certify geometry or manufacturability'}
@@ -136,13 +227,24 @@ async def finish_preview(inp: PreviewIn):
 async def transform_reference(inp: ReferenceIn):
     source=decode_binary(inp.source_png_base64,PNGSIG,MAX_PNG,'reference_source')
     additional = [decode_binary(value, PNGSIG, MAX_PNG, 'reference_image') for value in inp.additional_png_base64]
-    try:
-        prompt = reference_prompt(inp.stage, inp.prompt)
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail=f'Reference preset for {inp.stage} is unavailable') from exc
-    image64 = await provider_image_edit([source, *additional], prompt, select_image_model(inp.model))
+    prompt = load_reference_prompt(inp.stage, inp.prompt)
+    image64 = await provider_image_edit(
+        [source, *additional], prompt, await select_image_model(inp.model, inp.provider), inp.provider,
+    )
     return {'image_png_base64':image64,'stage':inp.stage,'mode':'image_edit',
             'warning':'Reference design only; not a 3D reconstruction'}
+
+
+def load_reference_prompt(stage, details):
+    try:
+        return reference_prompt(stage, details)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f'Reference preset for {stage} is unavailable') from exc
+
+
+@app.post('/v1/image/reference-prompt', dependencies=[Depends(require_auth)])
+async def get_reference_prompt(inp: ReferencePromptIn):
+    return {'prompt': load_reference_prompt(inp.stage, inp.prompt)}
 
 
 def upstream_binary(value, signature, limit, name):
@@ -155,14 +257,9 @@ def upstream_binary(value, signature, limit, name):
     return value
 
 
-async def provider_image_edit(images: list[bytes], prompt: str, model: str):
+async def provider_image_edit(images: list[bytes], prompt: str, model: str, provider: ImageProvider):
     """Minimal image-edit API adapter; requires a provider returning base64 PNG."""
-    api_key=os.getenv('OPENAI_IMAGE_API_KEY','')
-    if not api_key:
-        raise HTTPException(status_code=503,detail='Set OPENAI_IMAGE_API_KEY to enable AI image previews')
-    api_base=os.getenv('OPENAI_IMAGE_API_BASE','https://api.openai.com/v1').rstrip('/')
-    if urlparse(api_base).scheme!='https':
-        raise HTTPException(status_code=500,detail='Image API base must be HTTPS')
+    api_base, api_key = image_credentials(provider)
     field = 'image' if len(images) == 1 else 'image[]'
     files = [(field, (f'reference_{index}.png', image, 'image/png')) for index, image in enumerate(images, 1)]
     data={'model':model,'prompt':prompt,'size':'1024x1024'}
@@ -182,7 +279,7 @@ async def provider_image_edit(images: list[bytes], prompt: str, model: str):
                 except (KeyError, TypeError, ValueError):
                     code = None
                 detail = ('Image provider quota exhausted (HTTP 429). Check the provider billing and quota.'
-                          if code in ('insufficient_quota', 'billing_hard_limit_reached')
+                          if code in ('insufficient_quota', 'billing_hard_limit_reached', 'credit_balance_exhausted')
                           else 'Image provider rate limit or quota reached (HTTP 429). Check the provider limits.')
                 raise HTTPException(status_code=502, detail=detail) from exc
             raise HTTPException(status_code=502, detail=f'Image API returned HTTP {status}')

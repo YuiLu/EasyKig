@@ -1,37 +1,70 @@
 from pathlib import Path
 
 import bpy
-import bpy.utils.previews
+
+from . import image_preview
+from .properties import MAX_REFERENCE_IMAGES, PROMPT_FIELDS, get_image_prompt, image_prompt_rows
 
 
-_previews = None
-_preview_files = {}
+def _thumbnail_row(layout, context, owner, property_name, filename, scale=7.0):
+    if not image_preview.preview_icon(filename):
+        return False
+    row = layout.row()
+    row.alignment = 'CENTER'
+    ui_scale = context.preferences.system.ui_scale
+    popup_scale = max(9.0, min(22.0, (context.window.height - 60) / (40 * ui_scale)))
+    row.template_icon_view(owner, property_name, scale=scale, scale_popup=popup_scale)
+    return True
 
 
-def _thumbnail(slot, filename):
-    path = Path(bpy.path.abspath(filename)) if filename else None
-    try:
-        signature = (path, path.stat().st_mtime_ns) if path else None
-    except OSError:
-        signature = None
-    if _preview_files.get(slot) != signature:
-        if slot in _previews:
-            del _previews[slot]
-        _preview_files[slot] = signature
-        if signature:
-            try:
-                _previews.load(slot, str(path), 'IMAGE')
-            except (OSError, RuntimeError):
-                pass
-    return _previews[slot].icon_id if slot in _previews else 0
+def _draw_prompt(layout, settings):
+    box = layout.box()
+    header = box.row(align=True)
+    header.label(text='Prompt', icon='TEXT')
+    header.operator('easykig.paste_image_prompt', text='Paste', icon='PASTEDOWN')
+    header.operator('easykig.paste_image_prompt', text='', icon='X').clear = True
+    count = min(PROMPT_FIELDS, max(4, len(image_prompt_rows(settings)) + 1))
+    fields = box.column(align=True)
+    for index in range(count):
+        fields.prop(settings, f'prompt_row_{index}', text='')
+    length = len(get_image_prompt(settings))
+    if length > 1500:
+        box.label(text=f'{length:,} / 1,500 characters', icon='ERROR')
 
 
-def _thumbnail_row(layout, slot, filename, scale):
-    icon = _thumbnail(slot, filename)
-    if icon:
-        row = layout.row()
-        row.alignment = 'CENTER'
-        row.template_icon(icon_value=icon, scale=scale)
+def _draw_references(layout, settings, context):
+    entries = []
+    if settings.reference_image:
+        entries.append((settings, 'reference_thumbnail', settings.reference_image))
+    entries.extend((item, 'thumbnail', item.path) for item in settings.extra_references)
+
+    reference = layout.box()
+    header = reference.row()
+    header.label(text='References', icon='IMAGE_DATA')
+    count = header.row()
+    count.alignment = 'RIGHT'
+    count.label(text=f'{len(entries)} / {MAX_REFERENCE_IMAGES}')
+    add = reference.row()
+    add.enabled = len(entries) < MAX_REFERENCE_IMAGES
+    add.scale_y = 1.25
+    add.operator('easykig.set_reference', text='Add Images' if entries else 'Drop Images or Browse', icon='ADD')
+    if not entries:
+        return
+
+    width = context.region.width / context.preferences.system.ui_scale
+    columns = 2 if len(entries) > 1 and width >= 220 else 1
+    cards = reference.grid_flow(columns=columns, row_major=True, even_columns=True, even_rows=True)
+    for index, (owner, prop, filename) in enumerate(entries):
+        card = cards.box()
+        title = card.row(align=True)
+        name = Path(filename).name
+        title.label(text='Primary' if index == 0 else name, translate=False)
+        title.operator('easykig.set_reference', text='', icon='X').remove_index = index
+        scale = max(2.5, min(4.3, (width - 70) / 45)) if columns == 2 else 6.5
+        if not _thumbnail_row(card, context, owner, prop, filename, scale=scale):
+            card.label(text='Preview unavailable', icon='IMAGE_DATA')
+        if index == 0:
+            card.label(text=name, translate=False)
 
 
 class EASYKIG_PT_main(bpy.types.Panel):
@@ -45,24 +78,19 @@ class EASYKIG_PT_main(bpy.types.Panel):
         settings = context.scene.easykig_settings
         layout = self.layout
 
-        reference = layout.box()
-        reference.label(text='Reference Image')
-        row = reference.row(align=True)
-        row.scale_y = 1.4
-        label = Path(settings.reference_image).name if settings.reference_image else 'Drop PNG or Browse'
-        row.operator('easykig.set_reference', text=label, icon='FILE_IMAGE').filepath = ''
-        if settings.reference_image:
-            row.operator('easykig.set_reference', text='', icon='X').clear = True
-            _thumbnail_row(reference, 'reference', settings.reference_image, 3.0)
+        _draw_references(layout, settings, context)
 
         header, inputs = layout.panel('EASYKIG_reference_inputs', default_closed=True)
         header.label(text='Supporting Images')
         if inputs:
-            inputs.prop(settings, 'expression_image', text='Expression')
-            inputs.prop(settings, 'character_image', text='Character Colors')
-            inputs.prop(settings, 'shell_example_image', text='Shell Example')
+            inputs.label(text='Expression: Head, Design, Product')
+            inputs.prop(settings, 'expression_image', text='')
+            inputs.label(text='Color Palette: Head')
+            inputs.prop(settings, 'character_image', text='')
+            inputs.label(text='Shell Style: Design, Product')
+            inputs.prop(settings, 'shell_example_image', text='')
 
-        layout.prop(settings, 'finishing_prompt', text='Prompt')
+        _draw_prompt(layout, settings)
         actions = layout.column(align=True)
         row = actions.row(align=True)
         head = row.row(align=True)
@@ -87,12 +115,9 @@ class EASYKIG_PT_main(bpy.types.Panel):
         result = layout.box()
         result.prop(settings, 'result_view')
         path = getattr(settings, f'last_{settings.result_view}_png')
-        _thumbnail_row(result, 'result', path, 6.0)
-        if path and Path(bpy.path.abspath(path)).is_file():
-            result.operator('easykig.open_image', text='Open Full Size', icon='ZOOM_IN').kind = settings.result_view
-        else:
+        if not _thumbnail_row(result, context, settings, 'result_thumbnail', path):
             result.label(text='No preview for this stage', icon='IMAGE_DATA')
-        layout.label(text='Design prototype / 非制造级', icon='INFO')
+        layout.label(text='Design prototype only', icon='INFO')
 
 
 class EASYKIG_PT_modeling(bpy.types.Panel):
@@ -154,16 +179,12 @@ class EASYKIG_PT_modeling(bpy.types.Panel):
 
 
 def register():
-    global _previews
-    _previews = bpy.utils.previews.new()
+    image_preview.register()
     bpy.utils.register_class(EASYKIG_PT_main)
     bpy.utils.register_class(EASYKIG_PT_modeling)
 
 
 def unregister():
-    global _previews
     bpy.utils.unregister_class(EASYKIG_PT_modeling)
     bpy.utils.unregister_class(EASYKIG_PT_main)
-    bpy.utils.previews.remove(_previews)
-    _previews = None
-    _preview_files.clear()
+    image_preview.unregister()

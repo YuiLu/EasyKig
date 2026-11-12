@@ -2,7 +2,7 @@ import base64
 import os
 from fastapi.testclient import TestClient
 from server.app import app
-from server.prompts import finishing_prompt
+from easykig.image_prompts import finishing_prompt
 from server.shape_rules import propose_edits
 
 PNG_HEADER=b'\x89PNG\r\n\x1a\n'
@@ -78,7 +78,7 @@ def test_reference_preset_forwarded_verbatim(monkeypatch, tmp_path):
     source = PNG_HEADER + b'source'
     extra = PNG_HEADER + b'expression'
 
-    async def fake_provider(images, prompt, model):
+    async def fake_provider(images, prompt, model, provider):
         assert images == [source, extra]
         assert prompt == preset
         return base64.b64encode(source).decode()
@@ -96,6 +96,13 @@ def test_reference_preset_forwarded_verbatim(monkeypatch, tmp_path):
     )
     assert response.status_code == 200
     assert response.json()['stage'] == 'product'
+    prompt = client.post(
+        '/v1/image/reference-prompt',
+        headers={'Authorization': 'Bearer secret'},
+        json={'stage': 'product', 'prompt': 'must not be appended'},
+    )
+    assert prompt.json() == {'prompt': preset}
+    assert client.post('/v1/image/reference-prompt', json={'stage': 'product'}).status_code == 401
 
 
 def test_configured_reference_preset_missing_file(monkeypatch, tmp_path):
@@ -119,7 +126,7 @@ def test_image_model_is_selected_only_from_gateway_models(monkeypatch):
     seen = []
     png = base64.b64encode(PNG_HEADER).decode()
 
-    async def fake_provider(images, prompt, model):
+    async def fake_provider(images, prompt, model, provider):
         seen.append(model)
         return png
 
@@ -132,3 +139,62 @@ def test_image_model_is_selected_only_from_gateway_models(monkeypatch):
     assert client.post(url, headers=headers, json={**payload, 'model': 'fast-image'}).status_code == 200
     assert client.post(url, headers=headers, json={**payload, 'model': 'unknown'}).status_code == 422
     assert seen == ['default-image', 'fast-image']
+
+
+def test_subscription_uses_its_own_key_and_official_endpoints(monkeypatch):
+    import httpx
+    from server import app as gateway
+
+    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'secret')
+    monkeypatch.setenv('OPENAI_IMAGE_API_BASE', 'https://other.example/v1')
+    monkeypatch.setenv('OPENAI_IMAGE_API_KEY', 'gateway-key')
+    monkeypatch.setenv('OPENAI_SUBSCRIPTION_API_KEY', 'linked-project-key')
+    png = base64.b64encode(PNG_HEADER).decode()
+    requests = []
+
+    def upstream(request):
+        assert request.url.host == 'api.openai.com'
+        assert request.headers['Authorization'] == 'Bearer linked-project-key'
+        requests.append(request.url.path)
+        if request.url.path == '/v1/models':
+            return httpx.Response(200, json={'data': [{'id': 'gpt-image-2'}, {'id': 'gpt-6'}, {'id': 'gpt-image-1'}]})
+        assert request.url.path == '/v1/images/edits'
+        assert b'gpt-image-2' in request.content
+        return httpx.Response(200, json={'data': [{'b64_json': png}]})
+
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(gateway.httpx, 'AsyncClient', lambda **kwargs: async_client(transport=httpx.MockTransport(upstream), **kwargs))
+    headers = {'Authorization': 'Bearer secret'}
+    url = '/v1/image/models?provider=chatgpt_credits'
+    assert client.get(url).status_code == 401
+    assert client.get(url, headers=headers).json()['image_models'] == ['gpt-image-2']
+    payload = {'provider': 'chatgpt_credits', 'model': 'gpt-image-2', 'white_png_base64': png}
+    assert client.post('/v1/preview/finish', headers=headers, json=payload).status_code == 200
+    monkeypatch.delenv('OPENAI_SUBSCRIPTION_API_KEY')
+    assert client.post('/v1/preview/finish', headers=headers, json=payload).status_code == 503
+    assert requests == ['/v1/models', '/v1/images/edits']
+
+
+def test_finish_passes_all_references_after_the_white_render(monkeypatch):
+    from server import app as gateway
+
+    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'secret')
+    images = [PNG_HEADER + f'image-{index}'.encode() for index in range(5)]
+    encoded = [base64.b64encode(image).decode() for image in images]
+    seen = []
+
+    async def fake_provider(inputs, prompt, model, provider):
+        seen.append(inputs)
+        return encoded[0]
+
+    monkeypatch.setattr(gateway, 'provider_image_edit', fake_provider)
+    payload = {
+        'white_png_base64': encoded[0],
+        'reference_png_base64': encoded[1],
+        'additional_png_base64': encoded[2:],
+    }
+    headers = {'Authorization': 'Bearer secret'}
+    assert client.post('/v1/preview/finish', headers=headers, json=payload).status_code == 200
+    assert seen == [images]
+    payload['additional_png_base64'].append(encoded[1])
+    assert client.post('/v1/preview/finish', headers=headers, json=payload).status_code == 422

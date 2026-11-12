@@ -3,14 +3,19 @@ import datetime
 from pathlib import Path
 import tempfile
 import bpy
-from bpy.props import StringProperty
+from bpy.props import CollectionProperty, IntProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper, ExportHelper
 from .mesh_ops import (
     evaluated_copy, ensure_mm_scene, get_shape_key_ranges, get_shape_key_values,
     make_demo_template, rank_face_objects, set_shape_key_values, split_copy_by_material,
 )
 from .preview_ops import output_folder, white_render
-from .remote import encode_png, request_json, save_b64_png
+from .remote import REFERENCE_EXTENSIONS, encode_png, request_json, save_b64_png, validate_reference_image
+from .image_api import edit_image, list_models
+from .image_prompts import finishing_prompt, reference_prompt
+from .properties import (
+    MAX_REFERENCE_IMAGES, get_image_prompt, reference_paths, reset_reference_results, set_image_prompt,
+)
 
 
 def _settings(context):
@@ -25,20 +30,67 @@ def _prefs(context):
     return addon.preferences
 
 
-def _check_image_model(model, server_info):
-    allowed = server_info.get('image_models', [])
+def _check_image_model(model, allowed):
     if model and model not in allowed:
         names = ', '.join(allowed) or 'not reported'
         raise ValueError(f'Selected image model is unavailable. Gateway models: {names}')
 
 
 def _request_image(context, endpoint, data):
+    if len(data['prompt']) > 1500:
+        raise ValueError('Image Prompt must be at most 1,500 characters')
     prefs = _prefs(context)
-    model = prefs.image_model.strip()
+    provider = prefs.image_provider
+    if provider == 'direct':
+        if endpoint == '/v1/preview/finish':
+            prompt = finishing_prompt(data['prompt'])
+            images = [data['white_png_base64']]
+            if data.get('reference_png_base64'):
+                images.append(data['reference_png_base64'])
+            images.extend(data.get('additional_png_base64', []))
+        else:
+            stage, details = data['stage'], data['prompt']
+            if prefs.use_server_prompt_presets:
+                response = request_json(prefs, '/v1/image/reference-prompt', {'stage': stage, 'prompt': details})
+                prompt = response['prompt']
+            else:
+                prompt = reference_prompt(stage, details)
+            images = [data['source_png_base64'], *data['additional_png_base64']]
+        return edit_image(prefs, prefs.direct_image_model.strip(), prompt, images)
+
+    model = (prefs.image_model if provider == 'gateway' else prefs.subscription_image_model).strip()
+    additional = data.get('additional_png_base64', [])
+    needs_multi = bool(additional) if endpoint == '/v1/preview/finish' else len(additional) > 3
+    info = request_json(prefs, '/health') if provider != 'gateway' or model or needs_multi else {}
+    if needs_multi and not info.get('multi_reference_images'):
+        raise ValueError('Update the EasyKig server to send all of these reference images')
+    if provider != 'gateway':
+        # An older gateway would ignore an unknown provider and use its normal billing route.
+        if not info.get('image_providers', {}).get(provider):
+            raise ValueError('ChatGPT API Credits are unavailable. Upgrade the gateway and configure OPENAI_SUBSCRIPTION_API_KEY.')
+        data = {**data, 'provider': provider}
     if model:
-        _check_image_model(model, request_json(prefs, '/health'))
+        if provider == 'gateway':
+            if not info.get('image_catalog'):
+                _check_image_model(model, info.get('image_models', []))
         data = {**data, 'model': model}
     return request_json(prefs, endpoint, data)
+
+
+def _refresh_image_catalog(prefs):
+    if prefs.image_provider == 'direct':
+        info = {'image_models': list_models(prefs)}
+    elif prefs.image_provider == 'gateway':
+        info = request_json(prefs, '/health')
+        if info.get('image_catalog'):
+            info = request_json(prefs, '/v1/image/models', authenticated=True)
+    else:
+        info = request_json(prefs, '/v1/image/models?provider=chatgpt_credits', authenticated=True)
+    models = info.get('image_models', [])
+    prefs.image_catalog.clear()
+    for model in models:
+        prefs.image_catalog.add().name = model
+    return info
 
 
 def _face(context):
@@ -270,18 +322,25 @@ class EASYKIG_OT_health(bpy.types.Operator):
         try:
             prefs = _prefs(context)
             info = request_json(prefs, '/health')
-            model = prefs.image_model.strip()
-            _check_image_model(model, info)
-            active_model = model or info.get('image_model')
-            status = f"Server: {info.get('status', 'unknown')}"
-            if not info.get('preview_enabled'):
-                status += ' | Image provider not configured'
-            elif active_model:
-                status += f' | Image model: {active_model}'
-            self.report({'INFO'}, status)
+            mesh = 'configured' if info.get('mesh_editor_enabled') else 'not configured'
+            self.report({'INFO'}, f"EasyKig Server: {info.get('status', 'unknown')} | 3D editor: {mesh}")
             return {'FINISHED'}
         except Exception as exc:
             return _notify_failure(self,exc)
+
+
+class EASYKIG_OT_refresh_image_models(bpy.types.Operator):
+    bl_idname = 'easykig.refresh_image_models'
+    bl_label = 'Test Image API and Refresh Models'
+
+    def execute(self, context):
+        try:
+            info = _refresh_image_catalog(_prefs(context))
+            count = len(info.get('image_models', []))
+            self.report({'INFO'}, f'Found {count} image model(s)')
+            return {'FINISHED'}
+        except Exception as exc:
+            return _notify_failure(self, exc)
 
 
 class EASYKIG_OT_ai_morph(bpy.types.Operator):
@@ -311,32 +370,53 @@ class EASYKIG_OT_ai_morph(bpy.types.Operator):
 
 class EASYKIG_OT_set_reference(bpy.types.Operator):
     bl_idname = 'easykig.set_reference'
-    bl_label = 'Set EasyKig Reference Image'
-    bl_description = 'Choose or drop a PNG reference image'
+    bl_label = 'Add EasyKig Reference Images'
+    bl_description = 'Choose or drop PNG, JPEG or WebP reference images'
     filepath: StringProperty(subtype='FILE_PATH', options={'SKIP_SAVE'})
-    filter_glob: StringProperty(default='*.png', options={'HIDDEN'})
+    directory: StringProperty(subtype='DIR_PATH', options={'SKIP_SAVE', 'HIDDEN'})
+    files: CollectionProperty(type=bpy.types.OperatorFileListElement, options={'SKIP_SAVE', 'HIDDEN'})
+    filter_glob: StringProperty(default=';'.join(f'*{suffix}' for suffix in REFERENCE_EXTENSIONS), options={'HIDDEN'})
     clear: bpy.props.BoolProperty(options={'SKIP_SAVE', 'HIDDEN'})
+    remove_index: IntProperty(default=-1, options={'SKIP_SAVE', 'HIDDEN'})
 
     def invoke(self, context, event):
-        if self.filepath or self.clear:
+        if self.filepath or self.files or self.clear or self.remove_index >= 0:
             return self.execute(context)
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
         try:
-            if self.clear:
-                path = ''
-            else:
-                if not self.filepath:
-                    raise ValueError('Choose a PNG reference image')
-                path = bpy.path.abspath(self.filepath)
-                with Path(path).open('rb') as image:
-                    if image.read(8) != b'\x89PNG\r\n\x1a\n':
-                        raise ValueError('Choose a valid PNG reference image')
             settings = _settings(context)
-            if settings.reference_image != path:
-                settings.reference_image = path
+            paths = reference_paths(settings)
+            if self.clear:
+                paths = []
+            elif self.remove_index >= 0:
+                if self.remove_index >= len(paths):
+                    raise ValueError('This reference image is no longer in the list')
+                del paths[self.remove_index]
+            else:
+                if self.files:
+                    directory = Path(bpy.path.abspath(self.directory))
+                    incoming = [directory / item.name for item in self.files]
+                elif self.filepath:
+                    incoming = [Path(bpy.path.abspath(self.filepath))]
+                else:
+                    raise ValueError('Choose a PNG, JPEG or WebP reference image')
+                known = {Path(bpy.path.abspath(path)).resolve() for path in paths}
+                for path in incoming:
+                    path = validate_reference_image(path).resolve()
+                    if path not in known:
+                        paths.append(str(path))
+                        known.add(path)
+                if len(paths) > MAX_REFERENCE_IMAGES:
+                    raise ValueError(f'Add up to {MAX_REFERENCE_IMAGES} reference images')
+            if paths != reference_paths(settings):
+                settings.reference_image = paths[0] if paths else ''
+                settings.extra_references.clear()
+                for path in paths[1:]:
+                    settings.extra_references.add().path = path
+                reset_reference_results(settings, context)
             return {'FINISHED'}
         except (OSError, ValueError) as exc:
             return _notify_failure(self, exc)
@@ -344,17 +424,35 @@ class EASYKIG_OT_set_reference(bpy.types.Operator):
 
 class EASYKIG_FH_reference(bpy.types.FileHandler):
     bl_idname = 'EASYKIG_FH_reference'
-    bl_label = 'EasyKig Reference Image'
+    bl_label = 'EasyKig Reference Images'
     bl_import_operator = 'easykig.set_reference'
-    bl_file_extensions = '.png'
+    bl_file_extensions = ';'.join(REFERENCE_EXTENSIONS)
 
     @classmethod
     def poll_drop(cls, context):
-        return bool(
-            context.area and context.area.type == 'VIEW_3D'
-            and context.region and context.region.type == 'UI'
-            and context.region.active_panel_category == 'EasyKig'
+        area = context.area
+        if not area or area.type != 'VIEW_3D' or not area.spaces.active.show_region_ui:
+            return False
+        return any(
+            region.type == 'UI' and region.active_panel_category == 'EasyKig'
+            for region in area.regions
         )
+
+
+class EASYKIG_OT_paste_image_prompt(bpy.types.Operator):
+    bl_idname = 'easykig.paste_image_prompt'
+    bl_label = 'Paste Image Prompt'
+    bl_description = 'Replace the prompt with multiline text from the clipboard'
+    clear: bpy.props.BoolProperty(options={'SKIP_SAVE', 'HIDDEN'})
+
+    def execute(self, context):
+        value = '' if self.clear else context.window_manager.clipboard
+        if not self.clear and not value:
+            return _notify_failure(self, ValueError('The clipboard has no text'))
+        if len(value) > 1500:
+            return _notify_failure(self, ValueError('Image Prompt must be at most 1,500 characters'))
+        set_image_prompt(_settings(context), value)
+        return {'FINISHED'}
 
 
 class EASYKIG_OT_reference_design(bpy.types.Operator):
@@ -370,7 +468,8 @@ class EASYKIG_OT_reference_design(bpy.types.Operator):
                 'design': ('last_design_png', 'kig_design.png'),
                 'product': ('last_product_png', 'product_reference.png'),
             }
-            reference = bpy.path.abspath(s.reference_image) if s.reference_image else ''
+            references = [bpy.path.abspath(path) for path in reference_paths(s)]
+            reference = references[0] if references else ''
             source = {'head': reference, 'design': s.last_head_png or reference,
                       'product': s.last_design_png}.get(self.stage)
             if not source:
@@ -380,11 +479,13 @@ class EASYKIG_OT_reference_design(bpy.types.Operator):
                 'design': (s.expression_image, s.shell_example_image),
                 'product': (s.shell_example_image, s.expression_image),
             }[self.stage]
+            additional = dict.fromkeys([*(bpy.path.abspath(path) for path in supporting if path), *references])
+            additional.pop(source, None)
             result=_request_image(context,'/v1/reference/transform',{
                 'source_png_base64':encode_png(source),
                 'stage':self.stage,
-                'prompt':s.finishing_prompt,
-                'additional_png_base64': [encode_png(bpy.path.abspath(path)) for path in supporting if path],
+                'prompt':get_image_prompt(s),
+                'additional_png_base64': [encode_png(path) for path in additional],
             })
             output_property, filename = outputs[self.stage]
             dest=str(Path(output_folder(s))/filename)
@@ -424,10 +525,12 @@ class EASYKIG_OT_render_finished(bpy.types.Operator):
             source=settings.last_white_png
             if not source or not Path(source).exists():
                 source=white_render(context,_face(context))
-            data={'white_png_base64':encode_png(source),'prompt':settings.finishing_prompt}
-            if settings.reference_image:
-                ref=bpy.path.abspath(settings.reference_image)
-                data['reference_png_base64']=encode_png(ref)
+            data={'white_png_base64':encode_png(source),'prompt':get_image_prompt(settings)}
+            refs = [encode_png(bpy.path.abspath(path)) for path in reference_paths(settings)]
+            if refs:
+                data['reference_png_base64'] = refs[0]
+                if len(refs) > 1:
+                    data['additional_png_base64'] = refs[1:]
             result=_request_image(context,'/v1/preview/finish',data)
             filepath=str(Path(output_folder(settings))/('finished_'+datetime.datetime.now().strftime('%Y%m%d_%H%M%S')+'.png'))
             save_b64_png(result['image_png_base64'],filepath)
@@ -437,22 +540,6 @@ class EASYKIG_OT_render_finished(bpy.types.Operator):
             return {'FINISHED'}
         except Exception as exc:
             return _notify_failure(self,exc)
-
-
-class EASYKIG_OT_open_image(bpy.types.Operator):
-    bl_idname='easykig.open_image'
-    bl_label='Open Preview Image'
-    kind: StringProperty(default='finished')
-    def execute(self,context):
-        path = getattr(_settings(context), {
-            'head': 'last_head_png', 'design': 'last_design_png',
-            'product': 'last_product_png', 'white': 'last_white_png',
-            'finished': 'last_finished_png',
-        }[self.kind])
-        if not path or not Path(path).exists():
-            return _notify_failure(self,ValueError('Generate the preview first'))
-        bpy.ops.wm.path_open(filepath=path)
-        return {'FINISHED'}
 
 
 class EASYKIG_OT_remote_mesh_edit(bpy.types.Operator):
@@ -514,10 +601,10 @@ _CLASSES = (
     EASYKIG_OT_split_materials,EASYKIG_OT_make_working_copy,EASYKIG_OT_create_demo,
     EASYKIG_OT_set_units,EASYKIG_OT_resize_height,EASYKIG_OT_basic_mesh_check,
     EASYKIG_OT_add_solidify,EASYKIG_OT_export_stl,
-    EASYKIG_OT_health,EASYKIG_OT_ai_morph,EASYKIG_OT_set_reference,EASYKIG_FH_reference,
-    EASYKIG_OT_reference_design,
+    EASYKIG_OT_health,EASYKIG_OT_refresh_image_models,EASYKIG_OT_ai_morph,EASYKIG_OT_set_reference,EASYKIG_FH_reference,
+    EASYKIG_OT_paste_image_prompt,EASYKIG_OT_reference_design,
     EASYKIG_OT_render_white,
-    EASYKIG_OT_render_finished,EASYKIG_OT_open_image,EASYKIG_OT_remote_mesh_edit,
+    EASYKIG_OT_render_finished,EASYKIG_OT_remote_mesh_edit,
 )
 
 

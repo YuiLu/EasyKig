@@ -7,6 +7,7 @@ server/.env
 *.blend2
 easykig_outputs/
 .venv/
+.blender-dev/
 dist/
 reference-presets/
 .DS_Store
