@@ -9,6 +9,7 @@ from pathlib import Path
 import bpy
 
 from .image_orientation import image_orientation, orient_pixels
+from .server_config import server_credentials
 
 REFERENCE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp')
 PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
@@ -18,13 +19,14 @@ from .http_client import NoRedirect, normalize_url as _normalize_url, http_json 
 
 
 def request_json(prefs, path, payload=None, method=None, *, authenticated=False):
-    url = _normalize_url(prefs.server_url) + path
+    base_url, token = server_credentials(prefs)
+    url = base_url + path
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = {"Accept": "application/json"}
     if data is not None:
         headers["Content-Type"] = "application/json"
-    if prefs.server_token and (data is not None or authenticated):
-        headers["Authorization"] = "Bearer " + prefs.server_token
+    if token and (data is not None or authenticated):
+        headers["Authorization"] = "Bearer " + token
     return http_json(url, prefs.timeout_seconds, headers, data, method)
 
 

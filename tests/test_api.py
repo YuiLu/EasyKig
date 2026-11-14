@@ -15,6 +15,17 @@ def test_health():
     assert res.json()['status']=='ok'
 
 
+def test_authenticated_health_checks_gateway_token(monkeypatch):
+    monkeypatch.setenv('EASYKIG_AUTH_MODE', 'token')
+    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'connection-test-token')
+    assert client.get('/health').json()['authenticated_health']
+    assert client.get('/v1/health').status_code == 401
+    assert client.get('/v1/health', headers={'Authorization': 'Bearer wrong'}).status_code == 403
+    result = client.get('/v1/health', headers={'Authorization': 'Bearer connection-test-token'})
+    assert result.status_code == 200
+    assert result.json()['name'] == 'easykig-gateway'
+
+
 def test_auth_disabled_without_token(monkeypatch):
     monkeypatch.delenv('EASYKIG_SERVER_TOKEN',raising=False)
     monkeypatch.delenv('EASYKIG_ALLOW_UNAUTHENTICATED',raising=False)

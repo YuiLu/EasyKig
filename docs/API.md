@@ -12,8 +12,13 @@ ShapeUp 上游的私有令牌继续由服务器配置和读取。
 
 无需鉴权。返回 `status`、`version`、`preview_enabled` 和 `mesh_editor_enabled`。后两个字段表示已配置相应凭据或上游地址。
 `auth_mode` 返回 `token` 或 `ssh`，省略该字段的旧网关按 Token 模式连接。
+`authenticated_health: true` 表示支持下面的鉴权健康检查接口。
 3D 能力字段包括 `mesh_editor_backend`（`generic|shapeup`）、`mesh_editor_async` 和 `mesh_editor_requires_image`。这些是配置能力；ShapeUp 实际就绪状态通过鉴权的 `GET /v1/edit3d/health` 检查。
 同时返回 `image_model`（默认模型）和 `image_models`（允许选择的模型 ID 列表）。
+
+## `GET /v1/health`
+
+使用网关配置的认证模式，返回与 `/health` 相同的能力信息。插件的 **Connect Server** 用此接口验证凭据，随后按需检查 ShapeUp 就绪状态。此接口通过时表示网关认证有效。
 
 ## `GET /v1/image/models`
 

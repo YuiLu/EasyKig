@@ -319,17 +319,7 @@ class EASYKIG_OT_health(bpy.types.Operator):
     bl_idname='easykig.health'
     bl_label='Test Remote Server'
     def execute(self,context):
-        try:
-            prefs = _prefs(context)
-            info = request_json(prefs, '/health')
-            mesh = 'configured' if info.get('mesh_editor_enabled') else 'not configured'
-            if info.get('mesh_editor_backend') == 'shapeup' and info.get('mesh_editor_enabled'):
-                ready = request_json(_prefs(context), '/v1/edit3d/health', authenticated=True)
-                mesh = 'ShapeUp ready' if ready.get('ready') else 'ShapeUp not ready'
-            self.report({'INFO'}, f"EasyKig Server: {info.get('status', 'unknown')} | 3D editor: {mesh}")
-            return {'FINISHED'}
-        except Exception as exc:
-            return _notify_failure(self,exc)
+        return bpy.ops.easykig.connect_server()
 
 
 class EASYKIG_OT_refresh_image_models(bpy.types.Operator):

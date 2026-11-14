@@ -9,7 +9,7 @@ EasyKig 是 Kigurumi 头壳设计插件，当前使用 Blender 5.1 开发，配�
 3. **White Clay** 生成 1024×1024 正面白模。改变几何后重新渲染，再点击 **Finish**，将白模和参考图送给生图服务。使用 EasyKig Server 或 ChatGPT API Credits 路径时，多个参考图需要更新后的 EasyKig 网关。面板可切换结果阶段，点击结果缩略图可放大。
 4. 在 **3D Editing** 选择源网格和目标图。可使用 **Finished Preview**、已生成的 Head/Design/Product、原始参考图或 **Image File**。点 **Generate Edited 3D** 提交任务，Blender 保持可操作。状态栏显示排队、推理和下载阶段；关闭监控后可点 **Resume Task** 取回同一任务，结果作为新对象导入。**Stop Waiting / Esc** 只暂停客户端等待，已经接受的服务端任务继续执行。
 5. 展开 **Modeling Tools** 可创建 **Demo Template** 或使用选中的外部网格。**Preview Collection** 可把集合里的其他网格纳入白模。安装独立的 **MMD Tools 4.x** 后可使用 **PMX and Material Prep**，拆材质会烘焙到新副本。
-6. 在 **Preferences → Add-ons → EasyKig** 配置服务器、请求超时和生图来源。开启 Blender 的 **Allow Online Access** 后，分别使用 **Test EasyKig Server** 和 **Test Image API & Refresh Models** 检查连接。点 **Save Preferences** 后，后续开发版启动会沿用已保存的设置。
+6. 在 **Preferences → Add-ons → EasyKig** 选择 **Hosted Service** 或 **Self-hosted Service**，配置请求超时和生图来源。开启 Blender 的 **Allow Online Access** 后，点击 **Connect Server** 连接所选服务，图像 API 通过 **Test Image API & Refresh Models** 检查。点 **Save Preferences** 后，后续开发版启动会沿用已保存的设置。
 
 **Supporting Images** 中三项均为可选。**Face Expression** 给 Head、Design 和 Product 提供表情参考。**Character Color Palette** 给 Head 提供发色、瞳色和角色配色。**Shell Style Example** 给 Design 和 Product 提供头壳结构或成品风格参考。
 
@@ -49,18 +49,29 @@ ssh -NT -o ExitOnForwardFailure=yes -p 35995 -L 127.0.0.1:8001:127.0.0.1:8001 us
 
 `35995` 是示例 SSH 端口。用实际用户名替换 `user`，保持终端开启，Blender 的服务器地址填 `http://127.0.0.1:8001`。有单独部署的 HTTPS 反向代理时，可以填它提供的 EasyKig HTTPS 地址。Blender 使用 `EASYKIG_SERVER_TOKEN`，上游令牌配置在网关。尚未接入 GLB 服务时，`/v1/edit3d` 返回 501。接口见 [API 文档](docs/API.md)。
 
-### 自动 SSH 隧道
+### 服务模式与统一连接
 
-在 **Preferences → Add-ons → EasyKig → SSH Tunnel** 设置连接，点击 **Save Preferences**。启用 **Auto-connect SSH on Development Launch** 后，每次正常运行 `dev-blender.ps1` 都会读取该 Blender 配置里的连接设置。
+**Server Connection** 提供两个互斥模式，选择后显示对应的配置。两种模式分别保存服务地址与凭据。
+
+- **Hosted Service** 填托管 EasyKig 网关的 **Service URL** 和 **Access Token**。目前通过网关 Token 连接，托管域名和账户登录服务待部署。
+- **Self-hosted Service** 可选 **Direct URL** 或 **SSH Tunnel**。Direct URL 填自己的网关地址和 Token，SSH Tunnel 填 SSH 连接信息。端口、远端目标和可选网关 Token 放在 **Advanced Tunnel Settings**。
+
+统一点击 **Connect Server**。SSH 模式先打开隧道，再检查网关认证和 ShapeUp 就绪状态。连接检查在后台执行，状态显示在按钮下方。连接期间或连接成功后可通过旁边的 X 断开。切换模式或修改连接配置会结束本次连接检查并关闭其创建的隧道。通过新网关的 `/v1/health` 验证访问凭据，旧网关沿用原有健康检查协议。
+
+### 自动开发连接与 SSH 隧道
+
+在 **Preferences → Add-ons → EasyKig → Server Connection** 设置连接，点击 **Save Preferences**。启用 **Auto-connect on Development Launch** 后，每次正常运行 `dev-blender.ps1` 都会连接当前选择的服务模式。旧版启用 SSH 自动连接的偏好会迁移为 Self-hosted Service / SSH Tunnel。
 
 - **SSH Host / Config Alias** 填 SSH 主机或 `~/.ssh/config` 的 Host 别名。
 - **SSH Port** 填登录端口，例如 35995。填 0 使用 SSH 配置里的端口。
 - **SSH User** 和 **SSH Identity File** 可以留空，沿用 SSH 配置及 ssh-agent。
 - **Local Port** 默认 8001，**Remote Host** 默认 `127.0.0.1`，**Remote Gateway Port** 默认 8001。
 
-插件通过 OpenSSH 密钥或 ssh-agent 登录。首次连接先在终端使用同一主机完成主机指纹确认和登录验证。**Connect** 可在当前 Blender 内立即连接，**Disconnect** 关闭该 Blender 创建的隧道。连接时服务器地址自动设置为 `http://127.0.0.1:<Local Port>`，随后可点击 **Test EasyKig Server**。正常退出 Blender 或禁用 EasyKig 会关闭它创建的 SSH 进程。
+插件通过 OpenSSH 密钥或 ssh-agent 登录。首次连接先在终端使用同一主机完成主机指纹确认和登录验证。SSH 模式使用 `http://127.0.0.1:<Local Port>` 访问转发后的网关，Direct URL 的已保存地址单独保留。正常退出 Blender 或禁用 EasyKig 会关闭它创建的 SSH 进程。
 
-`-Check` 只检查加载，`-NoTunnel` 可在本次普通启动时跳过自动连接。端口被占用时会显示错误，选用其他 Local Port 或关闭先前的隧道后重试。
+未加密私钥可由 OpenSSH 直接使用。有口令的私钥可先加载到 ssh-agent，管理 Windows 的 ssh-agent 服务需要管理员 PowerShell。可通过 `ssh -o BatchMode=yes -i <private-key> -p <port> user@host "echo SSH_OK"` 检查插件所需的免交互登录方式。
+
+`-Check` 检查加载，`-NoConnect` 可在本次普通启动时跳过自动连接，保留旧参数 `-NoTunnel` 作为别名。端口被占用时会显示错误，选用其他 Local Port 或关闭先前的隧道后重试。
 
 ### SSH 免 Token 连接
 

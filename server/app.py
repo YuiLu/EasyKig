@@ -200,10 +200,12 @@ async def select_image_model(requested: str | None, provider: ImageProvider) -> 
 
 
 @app.get('/health')
+@app.get('/v1/health', dependencies=[Depends(require_auth)])
 async def health():
     models = image_models()
     return {'name':'easykig-gateway','status':'ok','version':app.version,
             'auth_mode':setting('AUTH_MODE', 'token'),
+            'authenticated_health':True,
             'preview_enabled':bool(os.getenv('OPENAI_IMAGE_API_KEY')),
             'image_model': models[0], 'image_models': models,
             'image_catalog': True,

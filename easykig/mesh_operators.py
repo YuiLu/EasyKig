@@ -15,6 +15,7 @@ from .mesh_ops import evaluated_copy, rank_face_objects
 from .operators import _face, _notify_failure, _prefs
 from .preview_ops import output_folder
 from .remote import encode_png
+from .server_config import server_credentials
 
 _ACTIVE = None
 
@@ -90,7 +91,8 @@ class _MeshModal:
         self._cleaned = False
         settings = self._scene.easykig_settings
         folder = Path(output_folder(settings))
-        client = MeshJobClient(prefs.server_url, prefs.server_token, prefs.timeout_seconds)
+        url, token = server_credentials(prefs)
+        client = MeshJobClient(url, token, prefs.timeout_seconds)
         stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:6]
         self._worker = MeshJobWorker(client, folder / f'edited_{stamp}.glb', folder / 'mesh_job.json',
                                      total_timeout=prefs.mesh_timeout_seconds)
@@ -228,7 +230,8 @@ class EASYKIG_OT_resume_mesh_job(_MeshModal, bpy.types.Operator):
                 if not receipt_path.exists():
                     raise ValueError('No saved 3D task. Start a new edit first.')
                 receipt = json.loads(receipt_path.read_text())
-                client = MeshJobClient(_prefs(context).server_url, _prefs(context).server_token)
+                url, token = server_credentials(_prefs(context))
+                client = MeshJobClient(url, token)
                 if receipt['server_url'] != client.url:
                     raise ValueError('Saved task belongs to a different EasyKig server')
                 job_id = receipt['id']
