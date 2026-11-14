@@ -96,7 +96,24 @@ class EASYKIG_AddonPreferences(bpy.types.AddonPreferences):
         default="http://127.0.0.1:8001",
         update=clear_image_catalog,
     )
-    server_token: StringProperty(name="Server Token", subtype="PASSWORD", default="", update=clear_image_catalog)
+    server_token: StringProperty(
+        name="Server Token", subtype="PASSWORD", default="", update=clear_image_catalog,
+        description='Leave empty when the gateway uses SSH authentication (EASYKIG_AUTH_MODE=ssh)',
+    )
+    ssh_auto_connect: BoolProperty(
+        name='Auto-connect SSH on Development Launch',
+        description='dev-blender.ps1 opens a tunnel using these saved preferences',
+    )
+    ssh_host: StringProperty(name='SSH Host / Config Alias', description='Host name or an alias from ~/.ssh/config')
+    ssh_port: IntProperty(name='SSH Port', default=0, min=0, max=65535,
+                          description='0 uses the port in SSH config, or the OpenSSH default')
+    ssh_user: StringProperty(name='SSH User', description='Leave empty to use SSH config')
+    ssh_identity: StringProperty(name='SSH Identity File', subtype='FILE_PATH',
+                                 description='Optional private key path. Leave empty to use SSH config or ssh-agent')
+    ssh_local_port: IntProperty(name='Local Port', default=8001, min=1, max=65535)
+    ssh_remote_host: StringProperty(name='Remote Host', default='127.0.0.1')
+    ssh_remote_port: IntProperty(name='Remote Gateway Port', default=8001, min=1, max=65535)
+    ssh_status: StringProperty(name='SSH Status', default='Disconnected', options={'SKIP_SAVE'})
     timeout_seconds: FloatProperty(name="Request Timeout (s)", default=360, min=5, max=600)
     mesh_timeout_seconds: FloatProperty(name='3D Job Wait Timeout (s)', default=7200, min=60, max=14400)
     image_provider: EnumProperty(
@@ -143,6 +160,21 @@ class EASYKIG_AddonPreferences(bpy.types.AddonPreferences):
         server.prop(self, "server_url")
         server.prop(self, "server_token")
         server.operator('easykig.health', text='Test EasyKig Server', icon='CHECKMARK')
+        tunnel = self.layout.box()
+        tunnel.label(text='SSH Tunnel')
+        tunnel.prop(self, 'ssh_auto_connect')
+        tunnel.prop(self, 'ssh_host')
+        tunnel.prop(self, 'ssh_port')
+        tunnel.prop(self, 'ssh_user')
+        tunnel.prop(self, 'ssh_identity')
+        tunnel.prop(self, 'ssh_local_port')
+        tunnel.prop(self, 'ssh_remote_host')
+        tunnel.prop(self, 'ssh_remote_port')
+        row = tunnel.row(align=True)
+        row.operator('easykig.ssh_connect', text='Connect', icon='LINKED')
+        row.operator('easykig.ssh_disconnect', text='Disconnect', icon='UNLINKED')
+        tunnel.label(text=self.ssh_status)
+        tunnel.label(text='Uses OpenSSH config, keys and ssh-agent.')
         col = self.layout.box()
         col.label(text='Image Generation')
         col.prop(self, "image_provider")

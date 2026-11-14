@@ -15,9 +15,15 @@ EasyKig 是 Kigurumi 头壳设计插件，当前使用 Blender 5.1 开发，配�
 
 **Remote Text → Shape Keys** 使用规则式参数调整。STL 以毫米导出，Solidify 与拓扑检查用于设计阶段。眼孔、内壳、佩戴空间与制造公差仍需工程验证。
 
-## 网关运行
+## 本机与远端环境
 
-需要 Python 3.10+。在仓库根目录执行：
+Windows 本机运行 Blender 5.1、EasyKig 插件和 OpenSSH 客户端。`dev-blender.ps1` 直接加载工作区源码，使用 Blender 自带 Python。本机使用远端 3D 服务时，环境依赖由远端网关和 ShapeUp 提供。
+
+Linux 远端运行 EasyKig FastAPI 网关，ShapeUp 的 GPU、PyTorch、CUDA、权重及推理依赖安装在远端的 ShapeUp 环境中。`server/requirements.txt` 是网关的 CPU 依赖，网关有独立虚拟环境。
+
+## 远端网关运行
+
+需要 Python 3.10+。在远端仓库根目录执行以下命令。
 
 ```bash
 python -m venv .venv
@@ -31,7 +37,7 @@ python -m pip install -r server/requirements.txt
 在 `server/.env` 设置随机生成的 `EASYKIG_SERVER_TOKEN`。图像预览使用 `OPENAI_IMAGE_API_KEY`、`OPENAI_IMAGE_API_BASE` 和默认模型 `OPENAI_IMAGE_MODEL`。通过 `EASYKIG_IMAGE_MODELS` 添加 Blender 可选择的模型 ID，以逗号分隔。3D 后端通过 `EASYKIG_EDIT3D_BACKEND=generic|shapeup` 选择。`generic` 使用 `EASYKIG_EDIT3D_UPSTREAM_URL` 的完整 JSON 端点；`shapeup` 使用 ShapeUp 服务根地址。上游令牌可用 `EASYKIG_EDIT3D_UPSTREAM_TOKEN` 或服务端的 `EASYKIG_EDIT3D_UPSTREAM_TOKEN_FILE` 配置。保存后用以下任一方式启动：
 
 ```bash
-python -m uvicorn server.app:app --env-file server/.env --host 127.0.0.1 --port 8001
+python scripts/run_gateway.py
 docker compose up --build -d
 ```
 
@@ -43,10 +49,37 @@ ssh -NT -o ExitOnForwardFailure=yes -p 35995 -L 127.0.0.1:8001:127.0.0.1:8001 us
 
 `35995` 是示例 SSH 端口。用实际用户名替换 `user`，保持终端开启，Blender 的服务器地址填 `http://127.0.0.1:8001`。有单独部署的 HTTPS 反向代理时，可以填它提供的 EasyKig HTTPS 地址。Blender 使用 `EASYKIG_SERVER_TOKEN`，上游令牌配置在网关。尚未接入 GLB 服务时，`/v1/edit3d` 返回 501。接口见 [API 文档](docs/API.md)。
 
-### 当前机器的 ShapeUp 对接
+### 自动 SSH 隧道
 
-EasyKig 网关已部署到 `http://127.0.0.1:8001`，由 Supervisor 托管；ShapeUp 保持在 8000。
-关闭终端、断开 SSH 不会停止服务，容器重启时沿用已安装的 Supervisor 启动流程。
+在 **Preferences → Add-ons → EasyKig → SSH Tunnel** 设置连接，点击 **Save Preferences**。启用 **Auto-connect SSH on Development Launch** 后，每次正常运行 `dev-blender.ps1` 都会读取该 Blender 配置里的连接设置。
+
+- **SSH Host / Config Alias** 填 SSH 主机或 `~/.ssh/config` 的 Host 别名。
+- **SSH Port** 填登录端口，例如 35995。填 0 使用 SSH 配置里的端口。
+- **SSH User** 和 **SSH Identity File** 可以留空，沿用 SSH 配置及 ssh-agent。
+- **Local Port** 默认 8001，**Remote Host** 默认 `127.0.0.1`，**Remote Gateway Port** 默认 8001。
+
+插件通过 OpenSSH 密钥或 ssh-agent 登录。首次连接先在终端使用同一主机完成主机指纹确认和登录验证。**Connect** 可在当前 Blender 内立即连接，**Disconnect** 关闭该 Blender 创建的隧道。连接时服务器地址自动设置为 `http://127.0.0.1:<Local Port>`，随后可点击 **Test EasyKig Server**。正常退出 Blender 或禁用 EasyKig 会关闭它创建的 SSH 进程。
+
+`-Check` 只检查加载，`-NoTunnel` 可在本次普通启动时跳过自动连接。端口被占用时会显示错误，选用其他 Local Port 或关闭先前的隧道后重试。
+
+### SSH 免 Token 连接
+
+在远端的 `server/.env` 设置以下值，然后重启 EasyKig 网关。
+
+```dotenv
+EASYKIG_AUTH_MODE=ssh
+EASYKIG_HOST=127.0.0.1
+EASYKIG_PORT=8001
+```
+
+通过 `python scripts/run_gateway.py` 启动时，服务绑定回环地址并关闭代理地址头解析。SSH 转发连接由远端 sshd 连接本机回环地址，网关按实际连接来源接受请求。此模式下 Blender 的 **Server Token** 留空，网关的各业务接口使用同一 SSH 访问方式。公网 HTTPS 部署使用默认 `EASYKIG_AUTH_MODE=token`。
+
+手动运行 Uvicorn 时使用 `--host 127.0.0.1 --no-proxy-headers`。Docker Compose 的桥接网络在网关处呈现 Docker 网桥地址，使用 Token 模式。
+
+### 远端 ShapeUp 对接
+
+下面以 `/data/EasyKig` 和 `/data/ShapeUp` 的服务器目录为例。EasyKig 网关在远端 `http://127.0.0.1:8001`，由 Supervisor 托管，ShapeUp 保持在远端 8000。
+关闭终端、断开 SSH 后服务继续运行，容器重启时沿用已安装的 Supervisor 启动流程。
 
 ```bash
 supervisorctl status easykig shapeup
@@ -54,20 +87,21 @@ supervisorctl restart easykig
 tail -f /data/EasyKig/runtime/gateway.log
 ```
 
-Blender 的服务器地址填 `http://127.0.0.1:8001`，**Server Token** 使用
-`/data/EasyKig/runtime/api-token` 中的内容。另一台机器需要先建立到当前 SSH 容器的隧道：
+Blender 的服务器地址填隧道的本地地址。网关使用 Token 模式时，**Server Token** 使用
+远端 `/data/EasyKig/runtime/api-token` 中的内容。也可以手动建立到 SSH 容器的隧道。
 
 ```bash
 ssh -NT -o ExitOnForwardFailure=yes -L 127.0.0.1:8001:127.0.0.1:8001 your-ssh-alias
 ```
 
-ShapeUp 的私有令牌只由网关读取，Blender 不需要填写它。图像生成仍沿用原有图像 API 配置；
-只使用现有目标图做 3D 编辑不需要图像 API Key。
+ShapeUp 的私有令牌由远端网关读取。使用现有目标图做 3D 编辑时，直接配置 3D 服务连接即可。
 
 在同样的 `/data/ShapeUp` 部署旁重新安装网关，可以执行：
 
 ```bash
 bash /data/EasyKig/scripts/install-gateway.sh
+# 启用 SSH 免 Token 模式并重启网关
+bash /data/EasyKig/scripts/install-gateway.sh --ssh-auth
 ```
 
 ShapeUp 根据**源网格和目标图像**进行编辑，不支持只用文字从零生成三维。
@@ -104,7 +138,9 @@ GPU 模型只在 ShapeUp 的任务子进程中加载，任务结束后释放显�
 
 之后改完代码，关闭开发版 Blender，再运行 `.\scripts\dev-blender.ps1`。启动脚本复用平时的 Blender 5.1 偏好和已启用的扩展，包括 MMD Tools。用 `-BlendFile` 打开现有场景，用 `-Check` 无界面确认扩展已加载。想单独使用旧的开发配置时加 `-Isolated`。
 
-网关也可以直接从源码运行，开发时给 README 中的 Uvicorn 命令加上 `--reload`，Python 代码变更后会自动重启。
+日志出现 `Abnormal ... No module named 'bgl'` 时，在 **Preferences → Add-ons** 搜索 **Abnormal**，关闭启用状态并保存偏好。Blender 5.0 已移除 BGL API，Abnormal 1.1 需要更新其绘制实现才能在 5.1 使用。日志中的 `EasyKig source` 表示 EasyKig 已从工作区加载。[Blender 5.0 Python API](https://developer.blender.org/docs/release_notes/5.0/python_api/)
+
+远端网关也可以直接从源码运行，开发时使用 `python -m uvicorn server.app:app --env-file server/.env --host 127.0.0.1 --port 8001 --no-proxy-headers --reload`，Python 代码变更后会自动重启。
 
 ```bash
 python -m pip install pytest

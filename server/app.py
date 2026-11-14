@@ -11,10 +11,11 @@ upstream or ShapeUp's image-conditioned job queue; both are opt-in.
 """
 import base64
 import hmac
+import ipaddress
 import os
 from typing import Annotated, Literal
 from urllib.parse import urlparse
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 import httpx
@@ -34,10 +35,21 @@ def setting(name: str, default: str = '') -> str:
     return os.getenv(f'EASYKIG_{name}', os.getenv(f'KIGSHELL_{name}', default))
 
 
-def require_auth(authorization: str|None=Header(default=None)):
+def require_auth(request: Request, authorization: str|None=Header(default=None)):
+    mode = setting('AUTH_MODE', 'token')
+    if mode == 'ssh':
+        try:
+            local = request.client is not None and ipaddress.ip_address(request.client.host).is_loopback
+        except ValueError:
+            local = False
+        if not local:
+            raise HTTPException(status_code=403, detail='SSH authentication requires a loopback connection to the gateway')
+        return
+    if mode != 'token':
+        raise HTTPException(status_code=503, detail='EASYKIG_AUTH_MODE must be token or ssh')
     expected=setting('SERVER_TOKEN','')
     if not expected:
-        # A local-only dev setup may omit token, but deployment must set token.
+        # Retain the explicitly enabled legacy local-development option.
         if setting('ALLOW_UNAUTHENTICATED','0')=='1':
             return
         raise HTTPException(status_code=503,detail='Server token is not configured')
@@ -191,6 +203,7 @@ async def select_image_model(requested: str | None, provider: ImageProvider) -> 
 async def health():
     models = image_models()
     return {'name':'easykig-gateway','status':'ok','version':app.version,
+            'auth_mode':setting('AUTH_MODE', 'token'),
             'preview_enabled':bool(os.getenv('OPENAI_IMAGE_API_KEY')),
             'image_model': models[0], 'image_models': models,
             'image_catalog': True,

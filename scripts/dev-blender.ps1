@@ -2,7 +2,8 @@ param(
     [string]$Blender,
     [string]$BlendFile,
     [switch]$Check,
-    [switch]$Isolated
+    [switch]$Isolated,
+    [switch]$NoTunnel
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,11 +44,13 @@ Set-Content -LiteralPath $savedBlender -Value $Blender -Encoding UTF8
 
 $previousResources = $env:BLENDER_USER_RESOURCES
 $previousRepository = $env:EASYKIG_DEV_REPOSITORY
+$previousTunnel = $env:EASYKIG_DEV_AUTO_TUNNEL
 try {
     if ($Isolated) {
         $env:BLENDER_USER_RESOURCES = $profile
     }
     $env:EASYKIG_DEV_REPOSITORY = $repository
+    $env:EASYKIG_DEV_AUTO_TUNNEL = if ($Check -or $NoTunnel) { '0' } else { '1' }
 
     $blenderArguments = @()
     if ($Check) {
@@ -92,6 +95,14 @@ if addon is None or not hasattr(bpy.types.Scene, 'easykig_settings'):
     raise RuntimeError('Could not enable the EasyKig development extension')
 print('Blender preferences:', bpy.utils.user_resource('CONFIG'), flush=True)
 print('EasyKig source:', Path(addon.__file__).resolve(), flush=True)
+prefs = bpy.context.preferences.addons[module_name].preferences
+if prefs.ssh_auto_connect and os.environ.get('EASYKIG_DEV_AUTO_TUNNEL') == '1':
+    from bl_ext.easykig_dev.easykig import connections
+    try:
+        connections.start_from_preferences()
+        print('EasyKig SSH: connecting using saved preferences', flush=True)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print('EasyKig SSH:', exc, flush=True)
 '@
     $blenderArguments += @('--python-exit-code', '1', '--python-expr', $bootstrap)
     & $Blender @blenderArguments
@@ -101,4 +112,5 @@ print('EasyKig source:', Path(addon.__file__).resolve(), flush=True)
 } finally {
     $env:BLENDER_USER_RESOURCES = $previousResources
     $env:EASYKIG_DEV_REPOSITORY = $previousRepository
+    $env:EASYKIG_DEV_AUTO_TUNNEL = $previousTunnel
 }

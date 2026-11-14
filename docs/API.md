@@ -2,9 +2,16 @@
 
 默认网关地址：`http://127.0.0.1:8001`，对所有 POST 接口发送 `Authorization: Bearer <EASYKIG_SERVER_TOKEN>`。
 
+网关的默认认证模式为 `EASYKIG_AUTH_MODE=token`。使用 SSH 隧道时可在服务器设置
+`EASYKIG_AUTH_MODE=ssh`，通过 `scripts/run_gateway.py` 绑定回环地址并禁用代理地址头解析。
+此模式下业务接口按实际 TCP 来源接受回环请求，客户端可省略 Authorization。
+非回环来源返回 403。远端 sshd 在服务器上建立回环连接，因此 Blender 可通过隧道访问。
+ShapeUp 上游的私有令牌继续由服务器配置和读取。
+
 ## `GET /health`
 
 无需鉴权。返回 `status`、`version`、`preview_enabled` 和 `mesh_editor_enabled`。后两个字段表示已配置相应凭据或上游地址。
+`auth_mode` 返回 `token` 或 `ssh`，省略该字段的旧网关按 Token 模式连接。
 3D 能力字段包括 `mesh_editor_backend`（`generic|shapeup`）、`mesh_editor_async` 和 `mesh_editor_requires_image`。这些是配置能力；ShapeUp 实际就绪状态通过鉴权的 `GET /v1/edit3d/health` 检查。
 同时返回 `image_model`（默认模型）和 `image_models`（允许选择的模型 ID 列表）。
 
@@ -137,5 +144,5 @@ ShapeUp 由目标图像引导，不使用文字条件。此接口不会额外调
 - 大请求：单输入 PNG 不超过 8 MB，输入 GLB 不超过 20 MB。
 - 反向代理应限制请求体大小和超时，并配置 HTTPS 与鉴权。
 - 网关仅在环境变量指定的 API/上游 URL 上发起请求；远端地址不由 Blender 上传参数控制，避免任意 SSRF。
-- `Authorization` 令牌保存在用户本机 Blender 偏好设置，建议通过 HTTPS 或 SSH 隧道使用。
+- Token 模式的 `Authorization` 令牌保存在用户本机 Blender 偏好设置，通过 HTTPS 或 SSH 隧道使用。SSH 模式按回环连接来源鉴权，Uvicorn 应关闭代理地址头解析。
 - ShapeUp 编辑使用异步任务队列；旧 generic 编辑接口保持同步 HTTP。网关、插件均不常驻 GPU 模型。

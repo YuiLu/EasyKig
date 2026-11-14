@@ -20,7 +20,7 @@ class MeshJobClient:
 
     def json(self, path, payload=None, *, authenticated=True):
         headers = {'Accept': 'application/json'}
-        if authenticated:
+        if authenticated and self.token:
             headers['Authorization'] = 'Bearer ' + self.token
         data = None
         if payload is not None:
@@ -29,8 +29,9 @@ class MeshJobClient:
         return http_json(self.url + path, self.timeout, headers, data)
 
     def result(self, job_id):
+        headers = {'Authorization': 'Bearer ' + self.token} if self.token else {}
         raw = http_bytes(self.url + '/v1/edit3d/jobs/' + job_id + '/result', self.timeout,
-                         {'Authorization': 'Bearer ' + self.token}, limit=MAX_GLB)
+                         headers, limit=MAX_GLB)
         if not raw.startswith(b'glTF'):
             raise ValueError('Remote server did not return a GLB')
         return raw

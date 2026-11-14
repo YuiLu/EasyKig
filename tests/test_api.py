@@ -22,6 +22,30 @@ def test_auth_disabled_without_token(monkeypatch):
     assert response.status_code==503
 
 
+def test_ssh_auth_accepts_loopback_without_gateway_token(monkeypatch):
+    monkeypatch.setenv('EASYKIG_AUTH_MODE', 'ssh')
+    # An existing token can remain configured when switching to SSH mode.
+    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'old-token')
+    for host in ('127.0.0.1', '::1'):
+        with TestClient(app, client=(host, 30000)) as local:
+            response = local.post('/v1/edit/parameters', json={'prompt': 'larger eyes'})
+            assert response.status_code == 200
+            assert local.get('/health').json()['auth_mode'] == 'ssh'
+
+
+def test_ssh_auth_rejects_nonlocal_peers_and_forwarded_headers(monkeypatch):
+    monkeypatch.setenv('EASYKIG_AUTH_MODE', 'ssh')
+    with TestClient(app, client=('192.0.2.10', 30000)) as remote:
+        response = remote.post('/v1/edit/parameters', json={'prompt': 'larger eyes'},
+                               headers={'X-Forwarded-For': '127.0.0.1'})
+        assert response.status_code == 403
+
+
+def test_invalid_auth_mode_is_reported(monkeypatch):
+    monkeypatch.setenv('EASYKIG_AUTH_MODE', 'unknown')
+    assert client.post('/v1/edit/parameters', json={'prompt': 'edit'}).status_code == 503
+
+
 def test_parameter_editing(monkeypatch):
     monkeypatch.setenv('EASYKIG_SERVER_TOKEN','demo-test-secret')
     payload={'prompt':'眼睛大一点，脸颊更圆一些',

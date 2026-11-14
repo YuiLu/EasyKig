@@ -5,8 +5,30 @@ import subprocess
 import sys
 
 from easykig.mesh_jobs import MeshJobWorker
+from easykig.mesh_jobs import MeshJobClient
 
 JOB = 'c' * 32
+
+
+def test_tokenless_mesh_requests_omit_authorization(monkeypatch):
+    from easykig import mesh_jobs
+
+    requests = []
+    def json_response(url, timeout, headers, data):
+        requests.append(headers)
+        return {'status': 'queued'}
+
+    def bytes_response(url, timeout, headers, **kwargs):
+        requests.append(headers)
+        return b'glTFresult'
+
+    monkeypatch.setattr(mesh_jobs, 'http_json', json_response)
+    monkeypatch.setattr(mesh_jobs, 'http_bytes', bytes_response)
+    client = MeshJobClient('http://127.0.0.1:8001', '')
+    client.json('/v1/edit3d/jobs', {'edit_png_base64': 'image'})
+    client.json('/v1/edit3d/jobs/' + JOB)
+    client.result(JOB)
+    assert all('Authorization' not in headers for headers in requests)
 
 
 class Client:
