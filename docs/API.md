@@ -65,6 +65,15 @@ ShapeUp 上游的私有令牌继续由服务器配置和读取。
 
 两个图像接口都接受可选的 `provider` 和 `model`。省略 `provider` 时使用网关默认来源。显式选 `chatgpt_credits` 时请求使用 `OPENAI_SUBSCRIPTION_API_KEY`。模型可从 `/v1/image/models` 获取。
 
+## 单部件图像编辑
+
+`GET /health` 返回 `component_images: true` 时支持以下两个认证接口。两者使用 `part` 选择 `front_face`、`hair_accessory` 或 `rigid_front_hair`，并接受可选的 `prompt`、`provider`、`model`。返回 `{"part":"front_face","image_png_base64":"..."}`。每张输入 PNG 限 8 MiB。
+
+- `POST /v1/components/reference` 接受 `source_png_base64`，根据成品照或成品多视图生成该部件的独立正面参考。
+- `POST /v1/components/target` 接受 `white_png_base64` 和 `reference_png_base64`。第一张图用于匹配模板部件视角与构图，第二张图用于部件设计和外观。
+
+插件把生成的目标图和对应的模板 GLB 快照提交给 `POST /v1/edit3d/jobs`。各部件沿用相同的 ShapeUp 任务协议。
+
 ## `POST /v1/edit3d`
 
 请求：

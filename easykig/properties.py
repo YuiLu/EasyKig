@@ -2,11 +2,12 @@ import textwrap
 
 import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
+from .components import EASYKIG_Component, reset_components, reset_generated_components, update_rigid_hair
 from .image_preview import extra_preview_items, reference_preview_items, result_preview_items
+from .image_prompts import COMPONENT_LABELS
 
 
 MAX_REFERENCE_IMAGES = 4
-PROMPT_FIELDS = 64
 
 
 def reset_reference_results(settings, _context):
@@ -38,47 +39,6 @@ def set_image_prompt(settings, value):
         settings.image_prompt_text.write(value)
     else:
         settings.finishing_prompt = value
-
-
-def image_prompt_rows(settings):
-    context = bpy.context
-    region = context.region
-    width = 36
-    if region and region.type == 'UI':
-        width = max(16, int((region.width / context.preferences.system.ui_scale - 56) / 7))
-    wrapper = textwrap.TextWrapper(
-        width=width, expand_tabs=False, replace_whitespace=False, drop_whitespace=False,
-    )
-    lines = get_image_prompt(settings).replace('\r\n', '\n').split('\n')
-    rows = []
-    for index, line in enumerate(lines):
-        parts = wrapper.wrap(line) or ['']
-        if index < len(lines) - 1:
-            parts[-1] += '\n'
-        rows.extend(parts)
-    return rows
-
-
-def _prompt_row_property(index):
-    def get(settings):
-        rows = image_prompt_rows(settings)
-        return rows[index].removesuffix('\n') if index < len(rows) else ''
-
-    def set_value(settings, value):
-        rows = image_prompt_rows(settings)
-        if index < len(rows):
-            original = rows[index]
-            ending = '\n' if original.endswith('\n') else ''
-            if not ending and index + 1 < len(rows) and value and not value[-1].isspace():
-                ending = original[len(original.rstrip(' \t')):]
-            if index and not rows[index - 1].endswith('\n') and value and not value[0].isspace():
-                value = original[:len(original) - len(original.lstrip(' \t'))] + value
-            rows[index] = value + ending
-            set_image_prompt(settings, ''.join(rows))
-        elif value:
-            set_image_prompt(settings, ''.join(rows) + '\n' * (index - len(rows) + 1) + value)
-
-    return StringProperty(name='Prompt Line', get=get, set=set_value, maxlen=1500)
 
 
 def reference_paths(settings):
@@ -282,6 +242,7 @@ class EASYKIG_Settings(bpy.types.PropertyGroup):
         name="Finish Description", default="soft pink skin, anime eyes, delicate blush, styled wig, premium handcrafted cosplay kigurumi mask",
     )
     image_prompt_text: PointerProperty(name='Image Prompt', type=bpy.types.Text)
+    image_prompt_value: StringProperty(name='Prompt', get=get_image_prompt, set=set_image_prompt, maxlen=1500)
     editing_prompt: StringProperty(name="Shape Edit Instruction", default="Rounder cheeks and larger eyes")
     mesh_edit_source: EnumProperty(
         name='Target Image', default='finished',
@@ -304,7 +265,19 @@ class EASYKIG_Settings(bpy.types.PropertyGroup):
     mesh_result_glb: StringProperty(name='Edited GLB', subtype='FILE_PATH')
     last_head_png: StringProperty(name="Head Reference", default="")
     last_design_png: StringProperty(name="Kigurumi Design", default="")
-    last_product_png: StringProperty(name="Product Reference", default="")
+    last_product_png: StringProperty(name="Product Reference", default="", update=reset_generated_components)
+    component: EnumProperty(
+        name='Part', items=[(key, label, '') for key, label in COMPONENT_LABELS.items()], default='front_face',
+    )
+    include_rigid_hair: BoolProperty(name='Rigid Front Hair', update=update_rigid_hair,
+                                    description='Include a separately molded front hair piece')
+    component_product_image: StringProperty(
+        name='Product Image', subtype='FILE_PATH', update=reset_components,
+        description='Optional existing product photo or sheet. Otherwise use the generated Product image',
+    )
+    front_face: PointerProperty(type=EASYKIG_Component)
+    hair_accessory: PointerProperty(type=EASYKIG_Component)
+    rigid_front_hair: PointerProperty(type=EASYKIG_Component)
     last_white_png: StringProperty(name="White Render", default="")
     last_finished_png: StringProperty(name="Finished Preview", default="")
     result_view: EnumProperty(
@@ -322,11 +295,7 @@ class EASYKIG_Settings(bpy.types.PropertyGroup):
     result_thumbnail: EnumProperty(items=result_preview_items, options={'SKIP_SAVE'})
 
 
-for _index in range(PROMPT_FIELDS):
-    EASYKIG_Settings.__annotations__[f'prompt_row_{_index}'] = _prompt_row_property(_index)
-
-
-_CLASSES = (EASYKIG_ImageModel, EASYKIG_ReferenceImage, EASYKIG_AddonPreferences, EASYKIG_Settings)
+_CLASSES = (EASYKIG_ImageModel, EASYKIG_ReferenceImage, EASYKIG_AddonPreferences, EASYKIG_Component, EASYKIG_Settings)
 
 
 def register():

@@ -108,6 +108,14 @@ def result_preview_items(settings, _context):
     return _preview_items(getattr(settings, f'last_{settings.result_view}_png'))
 
 
+def component_reference_items(component, _context):
+    return _preview_items(component.reference_png)
+
+
+def component_target_items(component, _context):
+    return _preview_items(component.target_png)
+
+
 def register():
     global _previews
     _previews = bpy.utils.previews.new()

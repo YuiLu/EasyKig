@@ -12,7 +12,7 @@ from .mesh_ops import (
 from .preview_ops import output_folder, white_render
 from .remote import REFERENCE_EXTENSIONS, encode_png, request_json, save_b64_png, validate_reference_image
 from .image_api import edit_image, list_models
-from .image_prompts import finishing_prompt, reference_prompt
+from .image_prompts import component_reference_prompt, component_target_prompt, finishing_prompt, reference_prompt
 from .properties import (
     MAX_REFERENCE_IMAGES, get_image_prompt, reference_paths, reset_reference_results, set_image_prompt,
 )
@@ -41,8 +41,15 @@ def _request_image(context, endpoint, data):
         raise ValueError('Image Prompt must be at most 1,500 characters')
     prefs = _prefs(context)
     provider = prefs.image_provider
+    is_component = endpoint.startswith('/v1/components/')
     if provider == 'direct':
-        if endpoint == '/v1/preview/finish':
+        if endpoint == '/v1/components/reference':
+            prompt = component_reference_prompt(data['part'], data['prompt'])
+            images = [data['source_png_base64']]
+        elif endpoint == '/v1/components/target':
+            prompt = component_target_prompt(data['part'], data['prompt'])
+            images = [data['white_png_base64'], data['reference_png_base64']]
+        elif endpoint == '/v1/preview/finish':
             prompt = finishing_prompt(data['prompt'])
             images = [data['white_png_base64']]
             if data.get('reference_png_base64'):
@@ -61,7 +68,9 @@ def _request_image(context, endpoint, data):
     model = (prefs.image_model if provider == 'gateway' else prefs.subscription_image_model).strip()
     additional = data.get('additional_png_base64', [])
     needs_multi = bool(additional) if endpoint == '/v1/preview/finish' else len(additional) > 3
-    info = request_json(prefs, '/health') if provider != 'gateway' or model or needs_multi else {}
+    info = request_json(prefs, '/health') if provider != 'gateway' or model or needs_multi or is_component else {}
+    if is_component and not info.get('component_images'):
+        raise ValueError('Update the EasyKig server to use component image editing')
     if needs_multi and not info.get('multi_reference_images'):
         raise ValueError('Update the EasyKig server to send all of these reference images')
     if provider != 'gateway':

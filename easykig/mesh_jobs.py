@@ -38,12 +38,13 @@ class MeshJobClient:
 
 
 class MeshJobWorker:
-    def __init__(self, client, result_path, receipt_path, *, total_timeout=7200, poll_interval=2):
+    def __init__(self, client, result_path, receipt_path, *, total_timeout=7200, poll_interval=2, require_shapeup=False):
         self.client = client
         self.result_path = Path(result_path)
         self.receipt_path = Path(receipt_path)
         self.total_timeout = total_timeout
         self.poll_interval = poll_interval
+        self.require_shapeup = require_shapeup
         self.events = queue.Queue()
         self.stop = threading.Event()
         self.thread = None
@@ -67,6 +68,8 @@ class MeshJobWorker:
                     return
                 if not info.get('mesh_editor_enabled'):
                     raise RuntimeError('3D editing is not configured on the EasyKig gateway')
+                if self.require_shapeup and not (info.get('mesh_editor_async') and info.get('mesh_editor_backend') == 'shapeup'):
+                    raise RuntimeError('Component editing needs the ShapeUp backend on the EasyKig gateway')
                 if info.get('mesh_editor_async'):
                     if not payload.get('edit_png_base64'):
                         raise ValueError('ShapeUp needs a target image. Choose Finished, a reference result, or an image file.')

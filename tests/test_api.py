@@ -233,3 +233,42 @@ def test_finish_passes_all_references_after_the_white_render(monkeypatch):
     assert seen == [images]
     payload['additional_png_base64'].append(encoded[1])
     assert client.post('/v1/preview/finish', headers=headers, json=payload).status_code == 422
+
+
+def test_component_requests_isolate_product_then_edit_template(monkeypatch):
+    from server import app as gateway
+    from easykig.image_prompts import COMPONENT_LABELS, component_reference_prompt, component_target_prompt
+
+    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'secret')
+    # Component prompts do not depend on the Head/Design/Product preset directory.
+    monkeypatch.setenv('EASYKIG_REFERENCE_PROMPTS_DIR', 'unused')
+    monkeypatch.setenv('OPENAI_IMAGE_MODEL', 'component-test-model')
+    raw = {key: PNG_HEADER + key.encode() for key in ('product', 'white', 'isolated')}
+    png = {key: base64.b64encode(value).decode() for key, value in raw.items()}
+    seen = []
+
+    async def fake_provider(images, prompt, model, provider):
+        assert model == 'component-test-model'
+        assert provider == 'gateway'
+        seen.append((images, prompt))
+        return png['isolated']
+
+    monkeypatch.setattr(gateway, 'provider_image_edit', fake_provider)
+    headers = {'Authorization': 'Bearer secret'}
+    assert client.get('/health').json()['component_images']
+    for part in COMPONENT_LABELS:
+        payload = {'part': part, 'prompt': 'Keep the blue flower'}
+        response = client.post('/v1/components/reference', headers=headers,
+                               json={**payload, 'source_png_base64': png['product']})
+        assert response.json() == {'part': part, 'image_png_base64': png['isolated']}
+        assert seen[-1] == ([raw['product']], component_reference_prompt(part, payload['prompt']))
+        response = client.post('/v1/components/target', headers=headers,
+                               json={**payload, 'white_png_base64': png['white'],
+                                     'reference_png_base64': png['isolated']})
+        assert response.json() == {'part': part, 'image_png_base64': png['isolated']}
+        assert seen[-1] == ([raw['white'], raw['isolated']], component_target_prompt(part, payload['prompt']))
+
+    invalid = {'part': 'full_head', 'source_png_base64': png['product']}
+    assert client.post('/v1/components/reference', headers=headers, json=invalid).status_code == 422
+    assert client.post('/v1/components/reference', json=invalid).status_code == 401
+    assert len(seen) == 6

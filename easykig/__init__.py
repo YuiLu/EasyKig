@@ -10,19 +10,23 @@ bl_info = {
 }
 
 def register():
-    from . import properties, connections, operators, mesh_operators, panels
+    from . import properties, connections, operators, mesh_operators, component_operators, prompt_editor, panels
 
     properties.register()
     connections.register()
     operators.register()
     mesh_operators.register()
+    component_operators.register()
+    prompt_editor.register()
     panels.register()
 
 
 def unregister():
-    from . import properties, connections, operators, mesh_operators, panels
+    from . import properties, connections, operators, mesh_operators, component_operators, prompt_editor, panels
 
     panels.unregister()
+    prompt_editor.unregister()
+    component_operators.unregister()
     mesh_operators.unregister()
     operators.unregister()
     connections.unregister()

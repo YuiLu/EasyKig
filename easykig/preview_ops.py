@@ -18,14 +18,14 @@ def output_folder(settings):
     return folder
 
 
-def white_render(context, obj, filename='white_front.png'):
+def white_render(context, obj, filename='white_front.png', *, include_collection=True):
     if obj is None or obj.type != 'MESH':
-        raise ValueError('Please select a face mesh')
+        raise ValueError('Please select a template mesh')
     settings = context.scene.easykig_settings
     output_path = str(output_folder(settings) / filename)
     group = settings.template_collection
     sources = [obj]
-    if group:
+    if include_collection and group:
         sources.extend(
             part for part in group.all_objects
             if part != obj and part.type == 'MESH' and part.name in context.view_layer.objects
@@ -115,5 +115,6 @@ def white_render(context, obj, filename='white_front.png'):
             if data.users == 0:
                 datablocks.remove(data)
 
-    settings.last_white_png = output_path
+    if include_collection:
+        settings.last_white_png = output_path
     return output_path

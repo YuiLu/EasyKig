@@ -20,6 +20,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 import httpx
 
+from easykig.image_prompts import Component, component_reference_prompt, component_target_prompt
 from .prompts import finishing_prompt, reference_prompt
 from .shape_rules import propose_edits
 from .shapeup import ShapeUp, backend as edit3d_backend
@@ -106,6 +107,19 @@ class ReferenceIn(ImageRequest):
 
 class ReferencePromptIn(BaseModel):
     stage: Literal['head', 'design', 'product']
+    prompt: str = Field(default='', max_length=1500)
+
+
+class ComponentReferenceIn(ImageRequest):
+    part: Component
+    source_png_base64: EncodedImage
+    prompt: str = Field(default='', max_length=1500)
+
+
+class ComponentTargetIn(ImageRequest):
+    part: Component
+    white_png_base64: EncodedImage
+    reference_png_base64: EncodedImage
     prompt: str = Field(default='', max_length=1500)
 
 
@@ -210,6 +224,7 @@ async def health():
             'image_model': models[0], 'image_models': models,
             'image_catalog': True,
             'multi_reference_images': True,
+            'component_images': True,
             'image_providers': {'gateway': bool(os.getenv('OPENAI_IMAGE_API_KEY')),
                                 'chatgpt_credits': bool(os.getenv('OPENAI_SUBSCRIPTION_API_KEY'))},
             'mesh_editor_enabled':bool(setting('EDIT3D_UPSTREAM_URL')),
@@ -269,6 +284,27 @@ def load_reference_prompt(stage, details):
 @app.post('/v1/image/reference-prompt', dependencies=[Depends(require_auth)])
 async def get_reference_prompt(inp: ReferencePromptIn):
     return {'prompt': load_reference_prompt(inp.stage, inp.prompt)}
+
+
+@app.post('/v1/components/reference', dependencies=[Depends(require_auth)])
+async def component_reference(inp: ComponentReferenceIn):
+    source = decode_binary(inp.source_png_base64, PNGSIG, MAX_PNG, 'product_png')
+    image = await provider_image_edit(
+        [source], component_reference_prompt(inp.part, inp.prompt),
+        await select_image_model(inp.model, inp.provider), inp.provider,
+    )
+    return {'image_png_base64': image, 'part': inp.part}
+
+
+@app.post('/v1/components/target', dependencies=[Depends(require_auth)])
+async def component_target(inp: ComponentTargetIn):
+    white = decode_binary(inp.white_png_base64, PNGSIG, MAX_PNG, 'part_white_png')
+    reference = decode_binary(inp.reference_png_base64, PNGSIG, MAX_PNG, 'part_reference_png')
+    image = await provider_image_edit(
+        [white, reference], component_target_prompt(inp.part, inp.prompt),
+        await select_image_model(inp.model, inp.provider), inp.provider,
+    )
+    return {'image_png_base64': image, 'part': inp.part}
 
 
 def upstream_binary(value, signature, limit, name):

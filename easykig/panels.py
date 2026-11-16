@@ -3,8 +3,10 @@ from pathlib import Path
 import bpy
 
 from . import image_preview
-from .properties import MAX_REFERENCE_IMAGES, PROMPT_FIELDS, get_image_prompt, image_prompt_rows
+from .components import component_state, component_template
+from .properties import MAX_REFERENCE_IMAGES
 from .mesh_operators import target_image
+from .prompt_editor import draw_prompt
 
 
 def _thumbnail_row(layout, context, owner, property_name, filename, scale=7.0):
@@ -16,21 +18,6 @@ def _thumbnail_row(layout, context, owner, property_name, filename, scale=7.0):
     popup_scale = max(9.0, min(22.0, (context.window.height - 60) / (40 * ui_scale)))
     row.template_icon_view(owner, property_name, scale=scale, scale_popup=popup_scale)
     return True
-
-
-def _draw_prompt(layout, settings):
-    box = layout.box()
-    header = box.row(align=True)
-    header.label(text='Prompt', icon='TEXT')
-    header.operator('easykig.paste_image_prompt', text='Paste', icon='PASTEDOWN')
-    header.operator('easykig.paste_image_prompt', text='', icon='X').clear = True
-    count = min(PROMPT_FIELDS, max(4, len(image_prompt_rows(settings)) + 1))
-    fields = box.column(align=True)
-    for index in range(count):
-        fields.prop(settings, f'prompt_row_{index}', text='')
-    length = len(get_image_prompt(settings))
-    if length > 1500:
-        box.label(text=f'{length:,} / 1,500 characters', icon='ERROR')
 
 
 def _draw_references(layout, settings, context):
@@ -91,7 +78,7 @@ class EASYKIG_PT_main(bpy.types.Panel):
             inputs.label(text='Shell Style: Design, Product')
             inputs.prop(settings, 'shell_example_image', text='')
 
-        _draw_prompt(layout, settings)
+        draw_prompt(layout, context, settings)
         actions = layout.column(align=True)
         row = actions.row(align=True)
         head = row.row(align=True)
@@ -122,12 +109,13 @@ class EASYKIG_PT_main(bpy.types.Panel):
 
 
 class EASYKIG_PT_mesh_generation(bpy.types.Panel):
-    bl_label = '3D Editing'
+    bl_label = 'Manual 3D Editing'
     bl_idname = 'EASYKIG_PT_mesh_generation'
     bl_parent_id = 'EASYKIG_PT_main'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = 'EasyKig'
+    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         settings = context.scene.easykig_settings
@@ -142,30 +130,94 @@ class EASYKIG_PT_mesh_generation(bpy.types.Panel):
         else:
             path = target_image(settings)
             inputs.label(text=Path(path).name if path else 'Generate or choose a target image first', icon='IMAGE_DATA')
-        inputs.label(text='ShapeUp uses the target image to edit the mesh.')
-        header, options = inputs.panel('EASYKIG_mesh_options', default_closed=True)
-        header.label(text='Sampling Options')
-        if options:
-            options.prop(settings, 'mesh_edit_seed')
-            options.prop(settings, 'mesh_edit_steps')
-            options.prop(settings, 'mesh_edit_resolution')
-        row = layout.row(align=True)
-        start = row.row(align=True)
-        start.enabled = not settings.mesh_job_running and bool(settings.face) and context.mode == 'OBJECT'
-        start.operator('easykig.remote_mesh_edit', text='Generate Edited 3D', icon='MESH_DATA')
-        resume = row.row(align=True)
-        resume.enabled = not settings.mesh_job_running
-        resume.operator('easykig.resume_mesh_job', text='Resume Task')
-        if settings.mesh_job_running:
-            layout.operator('easykig.stop_mesh_wait', icon='PAUSE')
-        layout.label(text='Status: ' + settings.mesh_job_status)
-        if settings.mesh_job_id:
-            layout.prop(settings, 'mesh_job_id', text='Task ID')
-        if settings.mesh_job_message:
-            for line in settings.mesh_job_message.splitlines()[:3]:
-                layout.label(text=line[:110])
-        if settings.mesh_result_glb:
-            layout.operator('easykig.import_mesh_result', text='Import Saved Result', icon='IMPORT')
+        _draw_mesh_job(layout, context, settings, ready=bool(settings.face))
+
+
+def _draw_mesh_job(layout, context, job, *, ready, part=''):
+    settings = context.scene.easykig_settings
+    header, options = layout.panel('EASYKIG_component_sampling' if part else 'EASYKIG_mesh_options', default_closed=True)
+    header.label(text='Sampling Options')
+    if options:
+        options.enabled = not settings.mesh_job_running
+        options.prop(settings, 'mesh_edit_seed')
+        options.prop(settings, 'mesh_edit_steps')
+        options.prop(settings, 'mesh_edit_resolution')
+    row = layout.row(align=True)
+    start = row.row(align=True)
+    start.enabled = not settings.mesh_job_running and ready and context.mode == 'OBJECT'
+    start.operator('easykig.remote_mesh_edit', text='Edit Part in 3D' if part else 'Generate Edited 3D', icon='MESH_DATA').part = part
+    resume = row.row(align=True)
+    resume.enabled = not settings.mesh_job_running
+    resume.operator('easykig.resume_mesh_job', text='Resume Task').part = part
+    if settings.mesh_job_running:
+        layout.operator('easykig.stop_mesh_wait', icon='PAUSE')
+    if job.mesh_job_status != 'idle' or job.mesh_job_id:
+        layout.label(text='Status: ' + job.mesh_job_status)
+    if job.mesh_job_id:
+        layout.prop(job, 'mesh_job_id', text='Task ID')
+    if job.mesh_job_message:
+        for line in job.mesh_job_message.splitlines()[:3]:
+            layout.label(text=line[:110])
+    if job.mesh_result_glb:
+        layout.operator('easykig.import_mesh_result', text='Import Saved Result', icon='IMPORT').part = part
+
+
+class EASYKIG_PT_components(bpy.types.Panel):
+    bl_label = 'Component Editing'
+    bl_idname = 'EASYKIG_PT_components'
+    bl_parent_id = 'EASYKIG_PT_main'
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'EasyKig'
+    bl_order = 0
+
+    def draw(self, context):
+        settings = context.scene.easykig_settings
+        identifier = settings.component
+        part = component_state(settings, identifier)
+        layout = self.layout
+        inputs = layout.column(align=True)
+        inputs.enabled = not settings.mesh_job_running
+        if settings.include_rigid_hair:
+            inputs.prop(settings, 'component')
+        else:
+            choices = inputs.row(align=True)
+            choices.prop_enum(settings, 'component', 'front_face')
+            choices.prop_enum(settings, 'component', 'hair_accessory')
+        inputs.prop(settings, 'include_rigid_hair')
+
+        fields = inputs.column(align=True)
+        fields.use_property_split = True
+        fields.use_property_decorate = False
+        fields.prop(settings, 'component_product_image')
+        if not settings.component_product_image:
+            inputs.label(text='Using Product result' if settings.last_product_png else 'Generate Product or choose an image',
+                         icon='IMAGE_DATA')
+        fields.prop(part, 'notes')
+        source = component_template(context, identifier)
+        fields.prop(part, 'source_mesh')
+        if source is not None and part.source_mesh is None:
+            inputs.label(text=source.name, translate=False, icon='MESH_DATA')
+
+        steps = inputs.column(align=True)
+        isolate = steps.row()
+        isolate.enabled = bool(settings.component_product_image or settings.last_product_png)
+        isolate.operator('easykig.component_image', text='Generate Part Reference', icon='IMAGE_DATA').adapt = False
+        adapt = steps.row()
+        adapt.enabled = bool(part.reference_png and source) and context.mode == 'OBJECT'
+        adapt.operator('easykig.component_image', text='Edit Part Image', icon='RENDER_STILL').adapt = True
+        paths = (('Part Reference', 'reference_thumbnail', part.reference_png),
+                 ('ShapeUp Target', 'target_thumbnail', part.target_png))
+        width = context.region.width / context.preferences.system.ui_scale
+        previews = layout.grid_flow(columns=2 if width >= 230 else 1, row_major=True, even_columns=True)
+        for name, property_name, path in paths:
+            if path:
+                card = previews.box()
+                card.label(text=name)
+                if not _thumbnail_row(card, context, part, property_name, path, scale=min(5, max(2.5, (width - 65) / 47))):
+                    card.label(text='Preview unavailable', icon='ERROR')
+        ready = bool(part.source_mesh and part.target_png and part.source_glb)
+        _draw_mesh_job(layout, context, part, part=identifier, ready=ready)
 
 
 class EASYKIG_PT_modeling(bpy.types.Panel):
@@ -228,6 +280,7 @@ class EASYKIG_PT_modeling(bpy.types.Panel):
 def register():
     image_preview.register()
     bpy.utils.register_class(EASYKIG_PT_main)
+    bpy.utils.register_class(EASYKIG_PT_components)
     bpy.utils.register_class(EASYKIG_PT_mesh_generation)
     bpy.utils.register_class(EASYKIG_PT_modeling)
 
@@ -235,5 +288,6 @@ def register():
 def unregister():
     bpy.utils.unregister_class(EASYKIG_PT_modeling)
     bpy.utils.unregister_class(EASYKIG_PT_mesh_generation)
+    bpy.utils.unregister_class(EASYKIG_PT_components)
     bpy.utils.unregister_class(EASYKIG_PT_main)
     image_preview.unregister()

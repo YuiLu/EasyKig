@@ -115,6 +115,19 @@ def test_legacy_3d_editor_still_works(tmp_path):
     assert worker.result_path.read_bytes() == b'glTFlegacy'
 
 
+def test_component_job_requires_shapeup(tmp_path):
+    class Generic(Client):
+        def json(self, path, payload=None, **kwargs):
+            assert path == '/health'
+            return {'mesh_editor_enabled': True, 'mesh_editor_backend': 'generic'}
+
+    worker = MeshJobWorker(Generic(), tmp_path / 'result.glb', tmp_path / 'receipt.json', require_shapeup=True)
+    worker.start({'edit_png_base64': 'image'})
+    worker.thread.join(3)
+    assert not worker.receipt_path.exists()
+    assert any(kind == 'error' and 'needs the ShapeUp backend' in value for kind, value in worker.events.queue)
+
+
 def test_worker_module_is_independent_of_blender_and_torch():
     result = subprocess.run([sys.executable, '-c',
         'import sys; from easykig.mesh_jobs import MeshJobWorker; assert "bpy" not in sys.modules; assert "torch" not in sys.modules'],

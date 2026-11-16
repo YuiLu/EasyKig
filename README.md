@@ -5,15 +5,25 @@ EasyKig 是 Kigurumi 头壳设计插件，当前使用 Blender 5.1 开发，配�
 ## Blender 安装与操作
 
 1. 下载 [EasyKig 扩展 ZIP](https://github.com/YuiLu/EasyKig/releases)，在 Blender 的 **Preferences → Get Extensions → Install from Disk** 安装。也可以从仓库根目录运行 `blender --command extension build --source-dir easykig`。
-2. 在 3D View 按 **N** 打开 **EasyKig**。将 PNG、JPG、JPEG 或 WebP 批量拖入 **References**，也可以用 **Add Images** 多选，最多四张。Blender 弹出导入菜单时选 **Add EasyKig Reference Images**。点缩略图在 Blender 内放大，按 **Esc** 关闭。预览从源图读取，长边最高为 1024 像素，方向按 EXIF 保持。直接在 **Prompt** 的各行输入，或用 **Paste** 粘贴整段多行文字。Prompt 和参考图路径随场景保存。按 **Head → Design → Product** 生成参考图。
+2. 在 3D View 按 **N** 打开 **EasyKig**。将 PNG、JPG、JPEG 或 WebP 批量拖入 **References**，也可以用 **Add Images** 多选，最多四张。Blender 弹出导入菜单时选 **Add EasyKig Reference Images**。点缩略图在 Blender 内放大，按 **Esc** 关闭。预览从源图读取，长边最高为 1024 像素，方向按 EXIF 保持。点击侧栏 **Prompt** 文本进入多行编辑。**Enter** 换行，**Ctrl+V** 粘贴整段，**Apply** 或 **Ctrl+Enter** 应用，**Esc** 取消编辑。Prompt 和参考图路径随场景保存。按 **Head → Design → Product** 生成参考图。
 3. **White Clay** 生成 1024×1024 正面白模。改变几何后重新渲染，再点击 **Finish**，将白模和参考图送给生图服务。使用 EasyKig Server 或 ChatGPT API Credits 路径时，多个参考图需要更新后的 EasyKig 网关。面板可切换结果阶段，点击结果缩略图可放大。
-4. 在 **3D Editing** 选择源网格和目标图。可使用 **Finished Preview**、已生成的 Head/Design/Product、原始参考图或 **Image File**。点 **Generate Edited 3D** 提交任务，Blender 保持可操作。状态栏显示排队、推理和下载阶段；关闭监控后可点 **Resume Task** 取回同一任务，结果作为新对象导入。**Stop Waiting / Esc** 只暂停客户端等待，已经接受的服务端任务继续执行。
+4. 在 **Component Editing** 按部件准备图像与 3D 编辑，流程见下节。**Manual 3D Editing** 可手动选择任意源网格和目标图，并通过 **Generate Edited 3D** 提交。
 5. 展开 **Modeling Tools** 可创建 **Demo Template** 或使用选中的外部网格。**Preview Collection** 可把集合里的其他网格纳入白模。安装独立的 **MMD Tools 4.x** 后可使用 **PMX and Material Prep**，拆材质会烘焙到新副本。
 6. 在 **Preferences → Add-ons → EasyKig** 选择 **Hosted Service** 或 **Self-hosted Service**，配置请求超时和生图来源。开启 Blender 的 **Allow Online Access** 后，点击 **Connect Server** 连接所选服务，图像 API 通过 **Test Image API & Refresh Models** 检查。点 **Save Preferences** 后，后续开发版启动会沿用已保存的设置。
 
 **Supporting Images** 中三项均为可选。**Face Expression** 给 Head、Design 和 Product 提供表情参考。**Character Color Palette** 给 Head 提供发色、瞳色和角色配色。**Shell Style Example** 给 Design 和 Product 提供头壳结构或成品风格参考。
 
 **Remote Text → Shape Keys** 使用规则式参数调整。STL 以毫米导出，Solidify 与拓扑检查用于设计阶段。眼孔、内壳、佩戴空间与制造公差仍需工程验证。
+
+### 单部件编辑
+
+1. 生成 **Product**，或者在 **Component Editing → Product Image** 选择已有的成品照或成品多视图。
+2. 选择 **Front Face** 或 **Hair Accessory**。需要建模硬质刘海时勾选 **Rigid Front Hair** 并选择对应部件。用 **Part Notes** 指定要提取的发饰，例如画面左侧的蓝色花饰。
+3. 点击 **Generate Part Reference**，检查成品图衍生的单件参考。给当前部件选择独立的 **Source Mesh**。唯一匹配前脸等名称的网格可直接作为模板。例如 `tests/test.blend` 的前脸匹配 `M07_face`，需要硬质前发时可选 `M07_hair`，发饰需要另选对应模板。
+4. 点击 **Edit Part Image**。插件从该模板的上传副本渲染单件白模，并依次把白模、单件参考送给已配置的图像编辑模型。面数较高时简化上传副本以符合 20 MiB 的 GLB 上限。调整模板后可重新运行此步，重新生成配对的源网格和目标图。
+5. 放大检查 **ShapeUp Target**，再点击 **Edit Part in 3D**。ShapeUp 收到这一步配对的单件 GLB 和目标图，结果导入为具名的新网格。每个部件各自保存图像、任务 ID 和结果。**Stop Waiting** 或 **Esc** 暂停等待，**Resume Task** 查询同一个任务。
+
+使用 **EasyKig Server** 或 **ChatGPT API Credits** 生成部件图需要支持 `component_images` 的网关。**OpenAI-compatible Gateway** 可直接生成这两步的图像。提交部件 3D 编辑时，网关需要配置 ShapeUp 后端。
 
 ## 本机与远端环境
 
@@ -155,7 +165,7 @@ GPU 模型只在 ShapeUp 的任务子进程中加载，任务结束后释放显�
 
 ```bash
 python -m pip install pytest
-python -m pytest -q
+python -m pytest -q tests
 # 可选：Blender 5.1 的真实导出/异步网关/恢复/导入检查（使用模拟推理上游，无 GPU 负载）
 python scripts/smoke-shapeup.py --blender /path/to/blender
 ```
