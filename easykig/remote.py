@@ -1,7 +1,4 @@
-"""Image and parameter request helpers for explicit Blender operators.
-
-Long 3D jobs use the bpy-free background client in mesh_jobs instead.
-"""
+"""Reference decoding and request helpers for component editing."""
 import base64
 import json
 import tempfile
@@ -15,7 +12,7 @@ REFERENCE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp')
 PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 
 
-from .http_client import NoRedirect, normalize_url as _normalize_url, http_json as _http_json
+from .http_client import http_json as _http_json
 
 
 def request_json(prefs, path, payload=None, method=None, *, authenticated=False):
@@ -93,14 +90,3 @@ def encode_png(filepath):
             bpy.data.images.remove(rotated)
         bpy.data.images.remove(image)
     return base64.b64encode(raw).decode("ascii")
-
-
-def save_b64_png(content, filepath):
-    raw = base64.b64decode(content, validate=True)
-    if not raw.startswith(PNG_SIGNATURE):
-        raise ValueError("Preview server did not return PNG")
-    if len(raw) > 24 * 1024 * 1024:
-        raise ValueError("Preview image exceeds maximum size")
-    Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-    Path(filepath).write_bytes(raw)
-    return filepath

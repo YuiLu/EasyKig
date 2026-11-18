@@ -5,28 +5,26 @@ bl_info = {
     "version": (0, 1, 2),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > EasyKig",
-    "description": "PMX preprocessing, template morph editing, white-shell preview and remote AI finishing",
+    "description": "Edit individual component meshes with reference images and ShapeUp",
     "category": "3D View",
 }
 
 def register():
-    from . import properties, connections, operators, mesh_operators, component_operators, prompt_editor, panels
+    from . import properties, connections, operators, mesh_operators, prompt_editor, panels
 
     properties.register()
     connections.register()
     operators.register()
     mesh_operators.register()
-    component_operators.register()
     prompt_editor.register()
     panels.register()
 
 
 def unregister():
-    from . import properties, connections, operators, mesh_operators, component_operators, prompt_editor, panels
+    from . import properties, connections, operators, mesh_operators, prompt_editor, panels
 
     panels.unregister()
     prompt_editor.unregister()
-    component_operators.unregister()
     mesh_operators.unregister()
     operators.unregister()
     connections.unregister()

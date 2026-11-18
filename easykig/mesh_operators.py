@@ -8,15 +8,11 @@ import tempfile
 import uuid
 
 import bpy
-from bpy.props import StringProperty
 from mathutils import Matrix
 
-from .components import component_state
-from .image_prompts import COMPONENT_LABELS
 from .mesh_jobs import MAX_GLB, MeshJobClient, MeshJobWorker
 from .mesh_ops import evaluated_copy, rank_face_objects
-from .operators import _face, _notify_failure, _prefs
-from .preview_ops import output_folder, white_render
+from .operators import _face, _notify_failure, _prefs, output_folder
 from .remote import encode_png
 from .server_config import server_credentials
 
@@ -24,13 +20,10 @@ _ACTIVE = None
 
 
 def target_image(settings):
-    fields = {'finished': 'last_finished_png', 'design': 'last_design_png',
-              'product': 'last_product_png', 'head': 'last_head_png',
-              'reference': 'reference_image', 'file': 'mesh_edit_image'}
-    return getattr(settings, fields[settings.mesh_edit_source])
+    return settings.mesh_edit_image
 
 
-def export_source(context, obj, filepath, *, clay_filename=None):
+def export_source(context, obj, filepath):
     """Export a baked temporary copy so current morphs reach the 3D model."""
     if context.mode != 'OBJECT':
         raise ValueError('Switch to Object Mode before starting a 3D edit')
@@ -46,24 +39,20 @@ def export_source(context, obj, filepath, *, clay_filename=None):
         bpy.ops.object.select_all(action='DESELECT')
         working.select_set(True)
         context.view_layer.objects.active = working
-        options = {}
-        if clay_filename is not None:
-            mesh = working.data
-            estimate = len(mesh.vertices) * 12 + len(mesh.loops) * 4
-            budget = int(MAX_GLB * .9)
-            if estimate > budget:
-                modifier = working.modifiers.new('EasyKig Upload Simplification', 'DECIMATE')
-                modifier.ratio = budget / estimate
-                modifier.use_collapse_triangulate = True
-            options = dict(export_normals=False, export_texcoords=False, export_materials='NONE')
+        mesh = working.data
+        estimate = len(mesh.vertices) * 12 + len(mesh.loops) * 4
+        budget = int(MAX_GLB * .9)
+        if estimate > budget:
+            modifier = working.modifiers.new('EasyKig Upload Simplification', 'DECIMATE')
+            modifier.ratio = budget / estimate
+            modifier.use_collapse_triangulate = True
+        options = dict(export_normals=False, export_texcoords=False, export_materials='NONE')
         result = bpy.ops.export_scene.gltf(filepath=str(filepath), export_format='GLB',
                                           use_selection=True, export_apply=True, export_morph=False, **options)
         if 'FINISHED' not in result:
             raise RuntimeError('GLB export was cancelled')
-        if clay_filename is not None:
-            if Path(filepath).stat().st_size > MAX_GLB:
-                raise ValueError('Component GLB exceeds 20 MiB. Choose a lighter template mesh.')
-            return white_render(context, working, clay_filename, include_collection=False)
+        if Path(filepath).stat().st_size > MAX_GLB:
+            raise ValueError('Source GLB exceeds 20 MiB. Choose a lighter template mesh.')
     finally:
         if working is not None:
             mesh = working.data
@@ -78,7 +67,7 @@ def export_source(context, obj, filepath, *, clay_filename=None):
             context.view_layer.objects.active = old_active
 
 
-def import_result(context, filepath, part=''):
+def import_result(context, filepath):
     if context.mode != 'OBJECT':
         raise ValueError('Switch to Object Mode to import the finished 3D result')
     existing = set(bpy.data.objects)
@@ -89,23 +78,14 @@ def import_result(context, filepath, part=''):
     for item in imported:
         if item.type == 'MESH':
             item['easykig_role'] = 'remote_edited_mesh'
-            if part:
-                item['easykig_part'] = part
-                item.name = 'EasyKig ' + COMPONENT_LABELS[part] + ' Edit'
     ranked = rank_face_objects(imported)
     if not ranked:
         raise ValueError('Returned GLB contains no mesh')
-    if not part:
-        context.scene.easykig_settings.face = ranked[0]
     return imported
 
 
-def _job_receipt(folder, part):
-    return folder / (part + '_mesh_job.json' if part else 'mesh_job.json')
-
-
 class _MeshModal:
-    def _start(self, context, payload=None, job_id=None, part=''):
+    def _start(self, context, payload=None, job_id=None):
         global _ACTIVE
         if _ACTIVE is not None:
             raise ValueError('A 3D request is already being monitored')
@@ -115,15 +95,14 @@ class _MeshModal:
         self._scene = context.scene
         self._cleaned = False
         settings = self._scene.easykig_settings
-        self._job = component_state(settings, part) if part else settings
-        self._part = part
+        self._job = settings
         folder = Path(output_folder(settings))
         url, token = server_credentials(prefs)
         client = MeshJobClient(url, token, prefs.timeout_seconds)
         stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:6]
-        filename = f'{part}_edited_{stamp}.glb' if part else f'edited_{stamp}.glb'
-        self._worker = MeshJobWorker(client, folder / filename, _job_receipt(folder, part),
-                                     total_timeout=prefs.mesh_timeout_seconds, require_shapeup=bool(part))
+        filename = f'edited_{stamp}.glb'
+        self._worker = MeshJobWorker(client, folder / filename, folder / 'mesh_job.json',
+                                     total_timeout=prefs.mesh_timeout_seconds, require_shapeup=True)
         if payload is not None:
             self._job.mesh_job_id = ''
             self._job.mesh_result_glb = ''
@@ -190,7 +169,7 @@ class _MeshModal:
                     job.mesh_job_status = 'succeeded'
                     job.mesh_job_message = 'Result saved. Original mesh preserved.'
                     if context.scene == self._scene and context.mode == 'OBJECT':
-                        imported = import_result(context, value, self._part)
+                        imported = import_result(context, value)
                         self.report({'INFO'}, f'3D edit imported {len(imported)} object(s); original intact')
                     else:
                         self.report({'INFO'}, '3D edit saved. Return to the source scene in Object Mode and click Import Result.')
@@ -220,7 +199,6 @@ class EASYKIG_OT_remote_mesh_edit(_MeshModal, bpy.types.Operator):
     bl_idname = 'easykig.remote_mesh_edit'
     bl_label = 'Generate Edited 3D Mesh'
     bl_description = 'Upload the baked source mesh and target image; monitor without blocking Blender'
-    part: StringProperty(options={'SKIP_SAVE', 'HIDDEN'})
 
     def execute(self, context):
         try:
@@ -229,24 +207,14 @@ class EASYKIG_OT_remote_mesh_edit(_MeshModal, bpy.types.Operator):
             settings = context.scene.easykig_settings
             if context.mode != 'OBJECT':
                 raise ValueError('Switch to Object Mode before starting a 3D edit')
-            if self.part:
-                component = component_state(settings, self.part)
-                if not component.source_mesh or not component.target_png or not component.source_glb:
-                    raise ValueError('Run Edit Part Image to prepare this component first')
-                image = encode_png(bpy.path.abspath(component.target_png))
-                path = Path(bpy.path.abspath(component.source_glb))
-                if not path.is_file():
-                    raise ValueError('Component source snapshot is missing. Run Edit Part Image again.')
-                if path.stat().st_size > MAX_GLB:
-                    raise ValueError('Component source GLB exceeds 20 MiB')
+            image_path = target_image(settings)
+            if not image_path:
+                raise ValueError('Choose a component reference image')
+            image = encode_png(bpy.path.abspath(image_path))
+            with tempfile.TemporaryDirectory(prefix='easykig_upload_') as temp:
+                path = Path(temp) / 'source.glb'
+                export_source(context, _face(context), path)
                 raw = path.read_bytes()
-            else:
-                image_path = target_image(settings)
-                image = encode_png(bpy.path.abspath(image_path)) if image_path else None
-                with tempfile.TemporaryDirectory(prefix='easykig_upload_') as temp:
-                    path = Path(temp) / 'source.glb'
-                    export_source(context, _face(context), path)
-                    raw = path.read_bytes()
             if len(raw) > MAX_GLB:
                 raise ValueError('Mesh GLB is over 20 MiB; simplify before uploading')
             payload = {'prompt': settings.editing_prompt, 'mesh_glb_base64': base64.b64encode(raw).decode('ascii'),
@@ -254,7 +222,7 @@ class EASYKIG_OT_remote_mesh_edit(_MeshModal, bpy.types.Operator):
                        'watertight_resolution': int(settings.mesh_edit_resolution)}
             if image:
                 payload['edit_png_base64'] = image
-            return self._start(context, payload=payload, part=self.part)
+            return self._start(context, payload=payload)
         except Exception as exc:
             return _notify_failure(self, exc)
 
@@ -263,28 +231,23 @@ class EASYKIG_OT_resume_mesh_job(_MeshModal, bpy.types.Operator):
     bl_idname = 'easykig.resume_mesh_job'
     bl_label = 'Resume Task'
     bl_description = 'Resume monitoring a submitted 3D job, without another GPU generation'
-    part: StringProperty(options={'SKIP_SAVE', 'HIDDEN'})
 
     def execute(self, context):
         try:
             settings = context.scene.easykig_settings
-            job_settings = component_state(settings, self.part) if self.part else settings
-            job_id = job_settings.mesh_job_id.strip()
-            if not job_id:
-                receipt_path = _job_receipt(output_folder(settings), self.part)
-                if not receipt_path.exists():
-                    raise ValueError('No saved 3D task. Start a new edit first.')
-                receipt = json.loads(receipt_path.read_text())
+            job_id = settings.mesh_job_id.strip()
+            receipt_path = output_folder(settings) / 'mesh_job.json'
+            receipt = json.loads(receipt_path.read_text()) if receipt_path.exists() else None
+            if receipt and (not job_id or receipt.get('id') == job_id):
                 url, token = server_credentials(_prefs(context))
-                client = MeshJobClient(url, token)
-                if receipt['server_url'] != client.url:
+                if receipt['server_url'] != MeshJobClient(url, token).url:
                     raise ValueError('Saved task belongs to a different EasyKig server')
-                job_id = receipt['id']
-                if not job_id:
-                    raise ValueError('No task ID has been received yet. Retry after the upload completes.')
+                job_id = job_id or receipt.get('id')
+            if not job_id:
+                raise ValueError('No saved 3D task. Start a component edit first.')
             job_id = MeshJobWorker.job_id(job_id)
-            job_settings.mesh_job_id = job_id
-            return self._start(context, job_id=job_id, part=self.part)
+            settings.mesh_job_id = job_id
+            return self._start(context, job_id=job_id)
         except Exception as exc:
             return _notify_failure(self, exc)
 
@@ -303,14 +266,11 @@ class EASYKIG_OT_stop_mesh_wait(bpy.types.Operator):
 class EASYKIG_OT_import_mesh_result(bpy.types.Operator):
     bl_idname = 'easykig.import_mesh_result'
     bl_label = 'Import Result'
-    part: StringProperty(options={'SKIP_SAVE', 'HIDDEN'})
 
     def execute(self, context):
         try:
             settings = context.scene.easykig_settings
-            if self.part:
-                settings = component_state(settings, self.part)
-            import_result(context, bpy.path.abspath(settings.mesh_result_glb), self.part)
+            import_result(context, bpy.path.abspath(settings.mesh_result_glb))
             return {'FINISHED'}
         except Exception as exc:
             return _notify_failure(self, exc)

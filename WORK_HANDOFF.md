@@ -1,63 +1,24 @@
 # EasyKig 开发交接
 
-当前开发和验证使用 Blender 5.1。插件和网关分别位于 `easykig/` 与 `server/`，安装、配置和部署步骤见 [README](README.md)，请求格式见 [API 文档](docs/API.md)。
+## 当前职责
 
-2026-11-16 在侧栏点击 Prompt 可编辑同一份多行文本，支持自动换行、选区、剪贴板与撤销。Blender 5.1 使用插件的文本框，提供 `UILayout.textbox` 的版本使用原生控件。旧场景的 Prompt 字符串和 Text 数据块仍可读取。
+2026-11-18 已将生图工作流拆到独立仓库 [ai-kigurumi-head-split](https://github.com/YuiLu/ai-kigurumi-head-split)。Blender 插件负责单个源网格、单张部件参考图、ShapeUp 任务、暂停恢复及结果导入。扩展设置保留服务器和结果目录配置。
 
-新增 **Component Editing**。从成品图生成前脸或选定发饰的单件参考，硬质前发由用户开启。GPT 图像编辑使用单件模板白模和单件参考，ShapeUp 使用对应的 GLB 快照和目标图。部件图、任务 ID 和导入结果按部件保存。旧 Head/Design/Product 的服务端原文预设继续用于整头参考流程。
+Editing Notes 保存文字编辑意图。当前 ShapeUp 仍采用图像条件，后续可接入文字条件后端。旧源网格、任务 ID、编辑图文件与服务器设置字段继续读取。生图属性和操作符已移除，旧 scene 文件中的网格数据继续使用。
 
-2026-11-14 连接设置整理为 Hosted Service 与 Self-hosted Service 两种模式，分别保存地址和凭据。自部署可选 Direct URL / SSH Tunnel，隧道端口与可选网关 Token 收进高级设置。Connect Server 统一执行后台连接检查，SSH 路径先建立隧道，网关增加 `/v1/health` 验证凭据，再按需检查 ShapeUp。修改连接配置或切换模式会结束旧连接检查，忽略旧请求迟到的结果。
+## 已验证
 
-托管模式目前接入用户提供的网关 URL 与 Token，固定托管域名和账户登录服务待部署。开发启动自动连接当前模式，`-NoConnect` 跳过，兼容 `-NoTunnel`。旧 SSH 自动连接偏好会迁移到自部署 SSH 模式，原有 Direct URL 保留。重启时重置连接状态，已保存的两套配置继续可用。
+- 42 项 Python 测试通过，保留认证、SSH、图片方向、异步任务恢复与坐标还原覆盖。
+- Blender 5.1.2 模拟 ShapeUp 的导出、提交、暂停、恢复和导入通过，当前源网格与 Shape Keys 保持可用。
+- 生图路由从 EasyKig 网关移除，健康检查仅报告 3D 编辑能力。
+- 独立网页端保留上游前三步提示词，增加前脸/头饰拆件。桌面横向四步卡片，手机单步预览和分区工作台。
+- 网页本地模拟 API 测试通过四步流转、拆件结果隔离、重载恢复、错误重试、取消与移动布局。
 
-2026-11-14 客户端与远端部署调整。Windows 本机通过 Blender 自带 Python 开发插件，OpenSSH 连接远端网关。推理环境位于远端 ShapeUp。扩展偏好新增 SSH 主机/别名、用户、端口、密钥路径与转发目标，PS1 普通启动按已保存设置自动连接，`-Check` 与 `-NoTunnel` 跳过。正常退出 Blender 或禁用插件会回收所创建的 SSH 进程。
+## 部署与待验收
 
-网关新增 `EASYKIG_AUTH_MODE=ssh`，接受实际回环连接，Blender 的 Server Token 可留空。`scripts/run_gateway.py` 在此模式要求绑定回环地址，关闭 Uvicorn 代理地址头解析。远端安装脚本的 `--ssh-auth` 可应用设置并重启网关。公网 HTTPS 与 Docker 桥接部署继续使用默认 Token 模式。
+- Windows 本机使用 Blender 5.1 和 OpenSSH，GPU 推理部署在远端 ShapeUp。
+- 之前提供的 SSH 目标已经通过免交互密钥登录验证，但该容器未发现交接中的网关/ShapeUp 部署，8001 未监听，实际部署位置待确认。
+- 新网页需要在实际图像 API 上验收生成质量，ShapeUp 实际部件编辑效果待验收。
+- 跨机器真实 Kig 模板的人工验收与制造验证待完成。
 
-Windows 当前旧 Abnormal 1.1 启动时依赖已移除的 BGL，在 Blender 5.1 中需要停用或升级。EasyKig 在该错误后可正常注册。
-
-v0.1.2 新增 ShapeUp 异步 3D 编辑：源网格 + 目标图提交、任务状态、暂停等待与恢复、结果导入。
-网关恢复 ShapeUp 的归一化坐标，插件在临时副本上烘焙 Shape Keys 并换算 glTF 米单位。
-原有 generic 文字 + GLB 上游接口继续保留。本机网关使用 8001，ShapeUp 使用 8000。
-
-[扩展安装包](https://github.com/YuiLu/EasyKig/releases) 由 GitHub Actions 发布。推送和 PR 会运行测试，推送与扩展版本一致的 `v*` 标签时发布 ZIP。
-
-v0.1.1 将服务配置、图像模型和预览目录设置放到扩展偏好。侧栏默认展示参考图、Prompt、生成操作和结果缩略图，建模工具默认折叠。
-
-## 已验收
-
-- [x] Blender 5.1.2 实际点击侧栏 Prompt，验证连续编辑、回车换行、Unicode 输入事件、撤销/重做、应用和取消。较早的 Text 类型 Prompt 可读写。
-- [x] 用 `tests/test.blend` 的 `M07_face` 和 `M07_hair` 及临时发饰网格，通过模拟 GPT 与 ShapeUp 完成独立生成、提交和导入。前脸 GLB 约 18 MiB，暂停和恢复复用同一任务。原场景文件和三个模板网格保持原样。
-- [x] 52 项 Python 测试通过，覆盖部件请求的图片顺序、鉴权、部件枚举和 ShapeUp 后端要求。
-- [x] 50 项 Python 测试通过，新增模式路由、独立凭据、旧网关兼容与鉴权健康检查覆盖。
-- [x] Blender 5.1.2 使用本机模拟 HTTP 网关验证统一按钮的 Direct URL、托管及模拟 SSH 路径，实际请求使用各自模式的凭据。切换时忽略迟到结果，两套设置保存后重启恢复，连接状态重置。
-- [x] Blender 5.1.2 实际绘制并截图验证三种连接配置界面，模式对应字段与 Connect Server 按钮显示正确。3D 模拟任务提交、暂停、恢复和导入继续通过。
-- [x] 41 项 Python 测试通过。SSH 参数、端口冲突、进程退出回收、无 Token 请求、回环访问控制与伪造代理头覆盖通过。
-- [x] Blender 5.1.2 实际保存 SSH 偏好后重启，按启动脚本逻辑自动建立 OpenSSH 连接，验证连接失败状态显示与禁用时回收。使用本地未监听端口验证失败路径。
-- [x] Blender 5.1.2 模拟 ShapeUp 的提交、暂停、恢复和结果导入通过，源 Shape Keys 与世界坐标尺寸保持。
-- [x] 30 项 Python 测试通过，包含 ShapeUp multipart 桥接、输入校验、错误状态、坐标恢复、任务持久化、客户端恢复和旧 generic 协议。
-- [x] Blender 5.1.2 构建并验证 v0.1.2 扩展 ZIP，以 `bl_ext.easykig_smoke.easykig` 命名空间启用、执行和禁用。
-- [x] Blender 5.1.2 完整导出 → 模拟上游异步任务 → 暂停/恢复 → 下载/导入检查通过；源 Shape Keys 和毫米场景的世界坐标尺寸保持。恢复未重复提交任务。
-- [x] 本机 EasyKig 网关通过实际 ShapeUp 跑完自带 fox 样例（geometry 30 steps、watertight 128、完整 texture），返回约 4.7 MB 带贴图 GLB。
-- [x] 重启 EasyKig 网关后，使用同一实际任务 ID 重新下载成功。任务完成后 GPU 显存回到运行前水平。
-- [x] 网关已加入现有 Supervisor 托管，与 ShapeUp 共用容器启动流程，空闲不加载 GPU 模型。
-
-- [x] 用 Blender 4.5.4 构建扩展 ZIP，安装、启用并禁用扩展。禁用后场景属性与操作符已注销。
-- [x] 演示模板提供 8 个可编辑 Shape Keys。外部网格的相对 Shape Keys 可读取，基底改名后也能正确识别。多对象集合可参与白模渲染。
-- [x] MMD Tools 4.5.13 导入自制 PMX 文件，识别 Face 网格、两个材质和顶点 Morph。在毫米场景测得正确的物理尺寸。
-- [x] 材质拆分仅作用于烘焙后的新副本，源网格材质和 Shape Keys 保持可用。
-- [x] 渲染完整的 1024×1024 白模 PNG，确认原场景设置和数据块恢复。二进制 STL 尺寸已核对为毫米。
-- [x] 自定义 HTTPS 网关通过 Blender 健康检查。网关通过本机 HTTPS 把请求转给测试上游，返回修改后的 GLB 并作为新网格导入。原始网格保持完整。
-- [x] 错误令牌、读超时与服务断开返回可读错误。Python 测试通过，Compose 配置解析通过。
-- [x] 可在网关加载逐字一致的参考 Prompt 预设。原文和署名由预设目录保管，公开源码使用 EasyKig 自带的默认 Prompt。
-
-## 待验收
-
-- [ ] 使用实际 GPT Image 额度和 ShapeUp 验收单件参考、目标图的隔离效果与生成网格外观。
-- [ ] Windows 本机到实际网关的自动 SSH 隧道与免 Token 验收。当前提供的 SSH 目标已经验证免交互密钥登录成功，该容器的 8001 未监听，且未发现交接中的 EasyKig/ShapeUp 部署目录，待确认实际部署位置。仓库旧部署记录的真实推理验收发生在服务器环境。
-- [ ] 在 Blender 中用两个授权的实际 Kig 模板验证 Shape Keys 和多对象组合。当前验证用的是自制网格。
-- [ ] 使用授权的实际 PMX 核对材质名、脸部识别和 Morph 差异。当前 PMX 验收使用自制文件。
-- [ ] 用可用图像额度生成 `finished_*.png`，人工确认与白模的角度、轮廓和五官一致。当前真实图片编辑请求收到供应商 HTTP 429。
-- [ ] 在另一台实际 Blender 客户端通过 SSH 隧道或 HTTPS，使用授权 Kig 模板完成人工目视验收。本机已完成实际 ShapeUp 推理与模拟上游的 Blender 端自动验收。
-- [ ] 在实际部署机运行 Docker Compose。
-- [ ] 眼孔保护、内壳和后壳、壁厚与制造验证。面板标注为非制造级，文字调参为规则式。
+开发启动方式见 [README](README.md)，网关接口见 [API](docs/API.md)。

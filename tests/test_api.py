@@ -2,8 +2,6 @@ import base64
 import os
 from fastapi.testclient import TestClient
 from server.app import app
-from easykig.image_prompts import finishing_prompt
-from server.shape_rules import propose_edits
 
 PNG_HEADER=b'\x89PNG\r\n\x1a\n'
 client=TestClient(app)
@@ -29,7 +27,7 @@ def test_authenticated_health_checks_gateway_token(monkeypatch):
 def test_auth_disabled_without_token(monkeypatch):
     monkeypatch.delenv('EASYKIG_SERVER_TOKEN',raising=False)
     monkeypatch.delenv('EASYKIG_ALLOW_UNAUTHENTICATED',raising=False)
-    response=client.post('/v1/edit/parameters',json={'prompt':'眼睛大一点','shape_keys':{'Eye Size':0.2}})
+    response=client.get('/v1/health')
     assert response.status_code==503
 
 
@@ -39,7 +37,7 @@ def test_ssh_auth_accepts_loopback_without_gateway_token(monkeypatch):
     monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'old-token')
     for host in ('127.0.0.1', '::1'):
         with TestClient(app, client=(host, 30000)) as local:
-            response = local.post('/v1/edit/parameters', json={'prompt': 'larger eyes'})
+            response = local.get('/v1/health')
             assert response.status_code == 200
             assert local.get('/health').json()['auth_mode'] == 'ssh'
 
@@ -47,228 +45,17 @@ def test_ssh_auth_accepts_loopback_without_gateway_token(monkeypatch):
 def test_ssh_auth_rejects_nonlocal_peers_and_forwarded_headers(monkeypatch):
     monkeypatch.setenv('EASYKIG_AUTH_MODE', 'ssh')
     with TestClient(app, client=('192.0.2.10', 30000)) as remote:
-        response = remote.post('/v1/edit/parameters', json={'prompt': 'larger eyes'},
+        response = remote.get('/v1/health',
                                headers={'X-Forwarded-For': '127.0.0.1'})
         assert response.status_code == 403
 
 
 def test_invalid_auth_mode_is_reported(monkeypatch):
     monkeypatch.setenv('EASYKIG_AUTH_MODE', 'unknown')
-    assert client.post('/v1/edit/parameters', json={'prompt': 'edit'}).status_code == 503
+    assert client.get('/v1/health').status_code == 503
 
 
-def test_parameter_editing(monkeypatch):
-    monkeypatch.setenv('EASYKIG_SERVER_TOKEN','demo-test-secret')
-    payload={'prompt':'眼睛大一点，脸颊更圆一些',
-             'shape_keys':{'Eye Size':0.2,'Cheek Fullness':0.2,'Nose Projection':0.7},
-             'ranges':{'Eye Size':[0,1],'Cheek Fullness':[0,1],'Nose Projection':[0,1]}}
-    result=client.post('/v1/edit/parameters',headers={'Authorization':'Bearer demo-test-secret'},json=payload)
-    assert result.status_code==200
-    values=result.json()['shape_keys']
-    assert values['Eye Size']>0.2
-    assert values['Cheek Fullness']>0.2
-    assert values['Nose Projection']==0.7
-    assert result.json()['mode']=='rules'
 
-
-def test_unrecognized_edit_remains_unchanged(monkeypatch):
-    monkeypatch.setenv('EASYKIG_SERVER_TOKEN','secret')
-    response=client.post('/v1/edit/parameters',headers={'Authorization':'Bearer secret'},
-                         json={'prompt':'Make it more like my reference',
-                               'shape_keys':{'Eye Size':0.4},'ranges':{'Eye Size':[0,1]}})
-    assert response.status_code==200
-    assert response.json()['shape_keys']['Eye Size']==0.4
-    assert response.json()['changes']=={}
-
-
-def test_image_endpoint_reports_missing_key(monkeypatch):
-    monkeypatch.setenv('EASYKIG_SERVER_TOKEN','secret')
-    monkeypatch.delenv('OPENAI_IMAGE_API_KEY',raising=False)
-    response=client.post('/v1/preview/finish',headers={'Authorization':'Bearer secret'},
-                         json={'white_png_base64':base64.b64encode(PNG_HEADER+b'abc').decode(),'prompt':'pink'})
-    assert response.status_code==503
-
-
-def test_edit3d_unconfigured(monkeypatch):
-    monkeypatch.setenv('EASYKIG_SERVER_TOKEN','secret')
-    monkeypatch.delenv('EASYKIG_EDIT3D_UPSTREAM_URL',raising=False)
-    res=client.post('/v1/edit3d',headers={'Authorization':'Bearer secret'},
-                    json={'prompt':'eyes larger','mesh_glb_base64':base64.b64encode(b'glTF'+b'0'*20).decode()})
-    assert res.status_code==501
-
-
-def test_prompt_structural_constraint():
-    s=finishing_prompt('purple wig and orange eyes')
-    assert 'camera' in s.lower()
-    assert 'purple wig' in s
-
-
-def test_reference_preset_forwarded_verbatim(monkeypatch, tmp_path):
-    from server import app as gateway
-
-    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'secret')
-    monkeypatch.setenv('EASYKIG_REFERENCE_PROMPTS_DIR', str(tmp_path))
-    preset = '第一行\r\n  第二行 {details}\r\n'
-    (tmp_path / 'product.txt').write_bytes(preset.encode('utf-8'))
-    source = PNG_HEADER + b'source'
-    extra = PNG_HEADER + b'expression'
-
-    async def fake_provider(images, prompt, model, provider):
-        assert images == [source, extra]
-        assert prompt == preset
-        return base64.b64encode(source).decode()
-
-    monkeypatch.setattr(gateway, 'provider_image_edit', fake_provider)
-    response = client.post(
-        '/v1/reference/transform',
-        headers={'Authorization': 'Bearer secret'},
-        json={
-            'stage': 'product',
-            'source_png_base64': base64.b64encode(source).decode(),
-            'additional_png_base64': [base64.b64encode(extra).decode()],
-            'prompt': 'must not be appended',
-        },
-    )
-    assert response.status_code == 200
-    assert response.json()['stage'] == 'product'
-    prompt = client.post(
-        '/v1/image/reference-prompt',
-        headers={'Authorization': 'Bearer secret'},
-        json={'stage': 'product', 'prompt': 'must not be appended'},
-    )
-    assert prompt.json() == {'prompt': preset}
-    assert client.post('/v1/image/reference-prompt', json={'stage': 'product'}).status_code == 401
-
-
-def test_configured_reference_preset_missing_file(monkeypatch, tmp_path):
-    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'secret')
-    monkeypatch.setenv('EASYKIG_REFERENCE_PROMPTS_DIR', str(tmp_path))
-    response = client.post(
-        '/v1/reference/transform',
-        headers={'Authorization': 'Bearer secret'},
-        json={'stage': 'head', 'source_png_base64': base64.b64encode(PNG_HEADER).decode()},
-    )
-    assert response.status_code == 503
-    assert 'preset' in response.json()['detail']
-
-
-def test_image_model_is_selected_only_from_gateway_models(monkeypatch):
-    from server import app as gateway
-
-    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'secret')
-    monkeypatch.setenv('OPENAI_IMAGE_MODEL', 'default-image')
-    monkeypatch.setenv('EASYKIG_IMAGE_MODELS', 'fast-image, default-image')
-    seen = []
-    png = base64.b64encode(PNG_HEADER).decode()
-
-    async def fake_provider(images, prompt, model, provider):
-        seen.append(model)
-        return png
-
-    monkeypatch.setattr(gateway, 'provider_image_edit', fake_provider)
-    headers = {'Authorization': 'Bearer secret'}
-    assert client.get('/health').json()['image_models'] == ['default-image', 'fast-image']
-    url = '/v1/preview/finish'
-    payload = {'white_png_base64': png}
-    assert client.post(url, headers=headers, json=payload).status_code == 200
-    assert client.post(url, headers=headers, json={**payload, 'model': 'fast-image'}).status_code == 200
-    assert client.post(url, headers=headers, json={**payload, 'model': 'unknown'}).status_code == 422
-    assert seen == ['default-image', 'fast-image']
-
-
-def test_subscription_uses_its_own_key_and_official_endpoints(monkeypatch):
-    import httpx
-    from server import app as gateway
-
-    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'secret')
-    monkeypatch.setenv('OPENAI_IMAGE_API_BASE', 'https://other.example/v1')
-    monkeypatch.setenv('OPENAI_IMAGE_API_KEY', 'gateway-key')
-    monkeypatch.setenv('OPENAI_SUBSCRIPTION_API_KEY', 'linked-project-key')
-    png = base64.b64encode(PNG_HEADER).decode()
-    requests = []
-
-    def upstream(request):
-        assert request.url.host == 'api.openai.com'
-        assert request.headers['Authorization'] == 'Bearer linked-project-key'
-        requests.append(request.url.path)
-        if request.url.path == '/v1/models':
-            return httpx.Response(200, json={'data': [{'id': 'gpt-image-2'}, {'id': 'gpt-6'}, {'id': 'gpt-image-1'}]})
-        assert request.url.path == '/v1/images/edits'
-        assert b'gpt-image-2' in request.content
-        return httpx.Response(200, json={'data': [{'b64_json': png}]})
-
-    async_client = httpx.AsyncClient
-    monkeypatch.setattr(gateway.httpx, 'AsyncClient', lambda **kwargs: async_client(transport=httpx.MockTransport(upstream), **kwargs))
-    headers = {'Authorization': 'Bearer secret'}
-    url = '/v1/image/models?provider=chatgpt_credits'
-    assert client.get(url).status_code == 401
-    assert client.get(url, headers=headers).json()['image_models'] == ['gpt-image-2']
-    payload = {'provider': 'chatgpt_credits', 'model': 'gpt-image-2', 'white_png_base64': png}
-    assert client.post('/v1/preview/finish', headers=headers, json=payload).status_code == 200
-    monkeypatch.delenv('OPENAI_SUBSCRIPTION_API_KEY')
-    assert client.post('/v1/preview/finish', headers=headers, json=payload).status_code == 503
-    assert requests == ['/v1/models', '/v1/images/edits']
-
-
-def test_finish_passes_all_references_after_the_white_render(monkeypatch):
-    from server import app as gateway
-
-    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'secret')
-    images = [PNG_HEADER + f'image-{index}'.encode() for index in range(5)]
-    encoded = [base64.b64encode(image).decode() for image in images]
-    seen = []
-
-    async def fake_provider(inputs, prompt, model, provider):
-        seen.append(inputs)
-        return encoded[0]
-
-    monkeypatch.setattr(gateway, 'provider_image_edit', fake_provider)
-    payload = {
-        'white_png_base64': encoded[0],
-        'reference_png_base64': encoded[1],
-        'additional_png_base64': encoded[2:],
-    }
-    headers = {'Authorization': 'Bearer secret'}
-    assert client.post('/v1/preview/finish', headers=headers, json=payload).status_code == 200
-    assert seen == [images]
-    payload['additional_png_base64'].append(encoded[1])
-    assert client.post('/v1/preview/finish', headers=headers, json=payload).status_code == 422
-
-
-def test_component_requests_isolate_product_then_edit_template(monkeypatch):
-    from server import app as gateway
-    from easykig.image_prompts import COMPONENT_LABELS, component_reference_prompt, component_target_prompt
-
-    monkeypatch.setenv('EASYKIG_SERVER_TOKEN', 'secret')
-    # Component prompts do not depend on the Head/Design/Product preset directory.
-    monkeypatch.setenv('EASYKIG_REFERENCE_PROMPTS_DIR', 'unused')
-    monkeypatch.setenv('OPENAI_IMAGE_MODEL', 'component-test-model')
-    raw = {key: PNG_HEADER + key.encode() for key in ('product', 'white', 'isolated')}
-    png = {key: base64.b64encode(value).decode() for key, value in raw.items()}
-    seen = []
-
-    async def fake_provider(images, prompt, model, provider):
-        assert model == 'component-test-model'
-        assert provider == 'gateway'
-        seen.append((images, prompt))
-        return png['isolated']
-
-    monkeypatch.setattr(gateway, 'provider_image_edit', fake_provider)
-    headers = {'Authorization': 'Bearer secret'}
-    assert client.get('/health').json()['component_images']
-    for part in COMPONENT_LABELS:
-        payload = {'part': part, 'prompt': 'Keep the blue flower'}
-        response = client.post('/v1/components/reference', headers=headers,
-                               json={**payload, 'source_png_base64': png['product']})
-        assert response.json() == {'part': part, 'image_png_base64': png['isolated']}
-        assert seen[-1] == ([raw['product']], component_reference_prompt(part, payload['prompt']))
-        response = client.post('/v1/components/target', headers=headers,
-                               json={**payload, 'white_png_base64': png['white'],
-                                     'reference_png_base64': png['isolated']})
-        assert response.json() == {'part': part, 'image_png_base64': png['isolated']}
-        assert seen[-1] == ([raw['white'], raw['isolated']], component_target_prompt(part, payload['prompt']))
-
-    invalid = {'part': 'full_head', 'source_png_base64': png['product']}
-    assert client.post('/v1/components/reference', headers=headers, json=invalid).status_code == 422
-    assert client.post('/v1/components/reference', json=invalid).status_code == 401
-    assert len(seen) == 6
+def test_generation_routes_are_removed():
+    for path in ('/v1/preview/finish', '/v1/reference/transform', '/v1/components/reference'):
+        assert client.post(path, json={}).status_code == 404

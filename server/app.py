@@ -1,28 +1,15 @@
-"""EasyKig remote gateway (FastAPI).
-
-Contracts:
-  GET  /health
-  POST /v1/edit/parameters
-  POST /v1/preview/finish
-  POST /v1/edit3d
-
-Preview requires OPENAI_IMAGE_API_KEY. 3D editing uses either a compatible generic
-upstream or ShapeUp's image-conditioned job queue; both are opt-in.
-"""
+"""EasyKig gateway for component mesh editing and resumable ShapeUp jobs."""
 import base64
 import hmac
 import ipaddress
 import os
-from typing import Annotated, Literal
+from typing import Literal
 from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 import httpx
 
-from easykig.image_prompts import Component, component_reference_prompt, component_target_prompt
-from .prompts import finishing_prompt, reference_prompt
-from .shape_rules import propose_edits
 from .shapeup import ShapeUp, backend as edit3d_backend
 
 MAX_PNG=8*1024*1024
@@ -75,54 +62,6 @@ def decode_binary(value: str, signature: bytes, limit: int, name: str):
     return raw
 
 
-class EditParametersIn(BaseModel):
-    prompt: str=Field(min_length=1,max_length=1500)
-    shape_keys: dict[str,float]=Field(default_factory=dict,max_length=200)
-    ranges: dict[str,list[float]]=Field(default_factory=dict,max_length=200)
-
-
-ImageProvider = Literal['gateway', 'chatgpt_credits']
-EncodedImage = Annotated[str, Field(min_length=10, max_length=12_000_000)]
-OPENAI_API_BASE = 'https://api.openai.com/v1'
-
-
-class ImageRequest(BaseModel):
-    provider: ImageProvider = 'gateway'
-    model: str | None = Field(default=None, min_length=1, max_length=160)
-
-
-class PreviewIn(ImageRequest):
-    white_png_base64: str=Field(min_length=10,max_length=12_000_000)
-    reference_png_base64: str|None=Field(default=None,max_length=12_000_000)
-    additional_png_base64: list[EncodedImage] = Field(default_factory=list, max_length=3)
-    prompt: str=Field(default='',max_length=1500)
-
-
-class ReferenceIn(ImageRequest):
-    source_png_base64: str=Field(min_length=10,max_length=12_000_000)
-    stage: str=Field(pattern='^(head|design|product)$')
-    prompt: str=Field(default='',max_length=1500)
-    additional_png_base64: list[EncodedImage] = Field(default_factory=list, max_length=6)
-
-
-class ReferencePromptIn(BaseModel):
-    stage: Literal['head', 'design', 'product']
-    prompt: str = Field(default='', max_length=1500)
-
-
-class ComponentReferenceIn(ImageRequest):
-    part: Component
-    source_png_base64: EncodedImage
-    prompt: str = Field(default='', max_length=1500)
-
-
-class ComponentTargetIn(ImageRequest):
-    part: Component
-    white_png_base64: EncodedImage
-    reference_png_base64: EncodedImage
-    prompt: str = Field(default='', max_length=1500)
-
-
 class Edit3DIn(BaseModel):
     prompt: str=Field(default='',max_length=1500)
     mesh_glb_base64: str=Field(min_length=10,max_length=28_000_000)
@@ -132,179 +71,15 @@ class Edit3DIn(BaseModel):
     watertight_resolution: Literal[128,256,512]=512
 
 
-def image_models() -> list[str]:
-    default = os.getenv('OPENAI_IMAGE_MODEL', '').strip() or 'gpt-image-2'
-    extras = os.getenv('EASYKIG_IMAGE_MODELS', '').split(',')
-    return list(dict.fromkeys([default, *(model.strip() for model in extras if model.strip())]))
-
-
-def is_openai_image_model(model: str) -> bool:
-    return model == 'chatgpt-image-latest' or (model.startswith('gpt-image-') and model != 'gpt-image-1')
-
-
-def image_credentials(provider: ImageProvider) -> tuple[str, str]:
-    if provider == 'chatgpt_credits':
-        key_var = 'OPENAI_SUBSCRIPTION_API_KEY'
-        api_base = OPENAI_API_BASE
-    else:
-        key_var = 'OPENAI_IMAGE_API_KEY'
-        api_base = os.getenv('OPENAI_IMAGE_API_BASE', OPENAI_API_BASE).rstrip('/')
-    api_key = os.getenv(key_var, '').strip()
-    if not api_key:
-        raise HTTPException(status_code=503, detail=f'Set {key_var} to enable this image provider')
-    if urlparse(api_base).scheme != 'https':
-        raise HTTPException(status_code=500, detail='Image API base must be HTTPS')
-    return api_base, api_key
-
-
-async def discover_image_models(provider: ImageProvider) -> list[str]:
-    api_base, key = image_credentials(provider)
-    try:
-        async with httpx.AsyncClient(timeout=12, follow_redirects=False) as client:
-            response = await client.get(api_base + '/models', headers={'Authorization': f'Bearer {key}'})
-            response.raise_for_status()
-            entries = response.json()['data']
-        models = sorted({item['id'] for item in entries if is_openai_image_model(item['id'])})
-    except httpx.TimeoutException as exc:
-        raise HTTPException(status_code=504, detail='Image model catalog timed out') from exc
-    except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError) as exc:
-        raise HTTPException(status_code=502, detail='Could not list OpenAI models. Check the linked project key and its model-read permission.') from exc
-    preferred = 'gpt-image-2.5-sunburst'
-    if preferred in models:
-        models.remove(preferred)
-        models.insert(0, preferred)
-    return models
-
-
-async def image_catalog(provider: ImageProvider) -> list[str]:
-    if provider == 'chatgpt_credits':
-        return await discover_image_models(provider)
-    configured = image_models()
-    if not os.getenv('OPENAI_IMAGE_API_KEY', '').strip():
-        return configured
-    try:
-        discovered = await discover_image_models(provider)
-    except HTTPException:
-        # Some compatible image gateways expose edits without a model catalog.
-        return configured
-    return list(dict.fromkeys([*configured, *discovered]))
-
-
-async def select_image_model(requested: str | None, provider: ImageProvider) -> str:
-    if provider == 'chatgpt_credits' and requested is not None:
-        if not is_openai_image_model(requested):
-            raise HTTPException(status_code=422, detail='Choose an OpenAI image model')
-        return requested
-    if provider == 'gateway':
-        configured = image_models()
-        if requested is None:
-            return configured[0]
-        if requested in configured:
-            return requested
-        if not is_openai_image_model(requested):
-            raise HTTPException(status_code=422, detail='Image model is not enabled on this gateway')
-    allowed = await image_catalog(provider)
-    if not allowed:
-        raise HTTPException(status_code=503, detail='No image models available for this provider')
-    if requested is None:
-        return allowed[0]
-    if requested not in allowed:
-        raise HTTPException(status_code=422, detail='Image model is not enabled on this gateway')
-    return requested
-
-
 @app.get('/health')
 @app.get('/v1/health', dependencies=[Depends(require_auth)])
 async def health():
-    models = image_models()
-    return {'name':'easykig-gateway','status':'ok','version':app.version,
-            'auth_mode':setting('AUTH_MODE', 'token'),
-            'authenticated_health':True,
-            'preview_enabled':bool(os.getenv('OPENAI_IMAGE_API_KEY')),
-            'image_model': models[0], 'image_models': models,
-            'image_catalog': True,
-            'multi_reference_images': True,
-            'component_images': True,
-            'image_providers': {'gateway': bool(os.getenv('OPENAI_IMAGE_API_KEY')),
-                                'chatgpt_credits': bool(os.getenv('OPENAI_SUBSCRIPTION_API_KEY'))},
-            'mesh_editor_enabled':bool(setting('EDIT3D_UPSTREAM_URL')),
-            'mesh_editor_backend':edit3d_backend(),
-            'mesh_editor_async':edit3d_backend()=='shapeup',
-            'mesh_editor_requires_image':edit3d_backend()=='shapeup'}
-
-
-@app.get('/v1/image/models', dependencies=[Depends(require_auth)])
-async def list_image_models(provider: ImageProvider = 'gateway'):
-    models = await image_catalog(provider)
-    return {'provider': provider, 'image_models': models, 'image_model': models[0] if models else None}
-
-
-@app.post('/v1/edit/parameters',dependencies=[Depends(require_auth)])
-async def edit_parameters(inp: EditParametersIn):
-    out,changes=propose_edits(inp.prompt,inp.shape_keys,inp.ranges)
-    return {'shape_keys':out,'changes':changes,'mode':'rules',
-            'message':('Rule-based edit; review visually.' if changes else
-                       'No confident rule matched; unchanged. Install an AI editor for richer prompts.')}
-
-
-@app.post('/v1/preview/finish',dependencies=[Depends(require_auth)])
-async def finish_preview(inp: PreviewIn):
-    white=decode_binary(inp.white_png_base64,PNGSIG,MAX_PNG,'white_png')
-    ref=(decode_binary(inp.reference_png_base64,PNGSIG,MAX_PNG,'reference_png')
-         if inp.reference_png_base64 else None)
-    images = [white, ref] if ref is not None else [white]
-    images.extend(decode_binary(value, PNGSIG, MAX_PNG, 'reference_image') for value in inp.additional_png_base64)
-    image64=await provider_image_edit(
-        images, finishing_prompt(inp.prompt),
-        await select_image_model(inp.model, inp.provider), inp.provider,
-    )
-    return {'image_png_base64':image64,'mode':'image_edit',
-            'warning':'Illustrative finish; cannot certify geometry or manufacturability'}
-
-
-@app.post('/v1/reference/transform',dependencies=[Depends(require_auth)])
-async def transform_reference(inp: ReferenceIn):
-    source=decode_binary(inp.source_png_base64,PNGSIG,MAX_PNG,'reference_source')
-    additional = [decode_binary(value, PNGSIG, MAX_PNG, 'reference_image') for value in inp.additional_png_base64]
-    prompt = load_reference_prompt(inp.stage, inp.prompt)
-    image64 = await provider_image_edit(
-        [source, *additional], prompt, await select_image_model(inp.model, inp.provider), inp.provider,
-    )
-    return {'image_png_base64':image64,'stage':inp.stage,'mode':'image_edit',
-            'warning':'Reference design only; not a 3D reconstruction'}
-
-
-def load_reference_prompt(stage, details):
-    try:
-        return reference_prompt(stage, details)
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail=f'Reference preset for {stage} is unavailable') from exc
-
-
-@app.post('/v1/image/reference-prompt', dependencies=[Depends(require_auth)])
-async def get_reference_prompt(inp: ReferencePromptIn):
-    return {'prompt': load_reference_prompt(inp.stage, inp.prompt)}
-
-
-@app.post('/v1/components/reference', dependencies=[Depends(require_auth)])
-async def component_reference(inp: ComponentReferenceIn):
-    source = decode_binary(inp.source_png_base64, PNGSIG, MAX_PNG, 'product_png')
-    image = await provider_image_edit(
-        [source], component_reference_prompt(inp.part, inp.prompt),
-        await select_image_model(inp.model, inp.provider), inp.provider,
-    )
-    return {'image_png_base64': image, 'part': inp.part}
-
-
-@app.post('/v1/components/target', dependencies=[Depends(require_auth)])
-async def component_target(inp: ComponentTargetIn):
-    white = decode_binary(inp.white_png_base64, PNGSIG, MAX_PNG, 'part_white_png')
-    reference = decode_binary(inp.reference_png_base64, PNGSIG, MAX_PNG, 'part_reference_png')
-    image = await provider_image_edit(
-        [white, reference], component_target_prompt(inp.part, inp.prompt),
-        await select_image_model(inp.model, inp.provider), inp.provider,
-    )
-    return {'image_png_base64': image, 'part': inp.part}
+    backend = edit3d_backend()
+    return {'name': 'easykig-gateway', 'status': 'ok', 'version': app.version,
+            'auth_mode': setting('AUTH_MODE', 'token'), 'authenticated_health': True,
+            'mesh_editor_enabled': bool(setting('EDIT3D_UPSTREAM_URL')),
+            'mesh_editor_backend': backend, 'mesh_editor_async': backend == 'shapeup',
+            'mesh_editor_requires_image': backend == 'shapeup', 'mesh_editor_text': False}
 
 
 def upstream_binary(value, signature, limit, name):
@@ -315,43 +90,6 @@ def upstream_binary(value, signature, limit, name):
     except HTTPException as exc:
         raise HTTPException(status_code=502, detail=f'Invalid upstream response: {exc.detail}') from exc
     return value
-
-
-async def provider_image_edit(images: list[bytes], prompt: str, model: str, provider: ImageProvider):
-    """Minimal image-edit API adapter; requires a provider returning base64 PNG."""
-    api_base, api_key = image_credentials(provider)
-    field = 'image' if len(images) == 1 else 'image[]'
-    files = [(field, (f'reference_{index}.png', image, 'image/png')) for index, image in enumerate(images, 1)]
-    data={'model':model,'prompt':prompt,'size':'1024x1024'}
-    async with httpx.AsyncClient(timeout=180.0,follow_redirects=False) as client:
-        try:
-            response=await client.post(api_base+'/images/edits',
-                                       headers={'Authorization':'Bearer '+api_key},
-                                       files=files,data=data)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            if status in (401, 403):
-                raise HTTPException(status_code=502, detail=f'Image API rejected the provider credentials or model access (HTTP {status})')
-            if status == 429:
-                try:
-                    code = exc.response.json()['error']['code']
-                except (KeyError, TypeError, ValueError):
-                    code = None
-                detail = ('Image provider quota exhausted (HTTP 429). Check the provider billing and quota.'
-                          if code in ('insufficient_quota', 'billing_hard_limit_reached', 'credit_balance_exhausted')
-                          else 'Image provider rate limit or quota reached (HTTP 429). Check the provider limits.')
-                raise HTTPException(status_code=502, detail=detail) from exc
-            raise HTTPException(status_code=502, detail=f'Image API returned HTTP {status}')
-        except httpx.TimeoutException as exc:
-            raise HTTPException(status_code=504, detail='Image provider timed out') from exc
-        except httpx.RequestError as exc:
-            raise HTTPException(status_code=502,detail=f'Image provider connection failed: {str(exc)[:160]}')
-    try:
-        image64=response.json()['data'][0]['b64_json']
-    except (KeyError,IndexError,TypeError,ValueError):
-        raise HTTPException(status_code=502,detail='Image API did not return b64_json; check model/provider')
-    return upstream_binary(image64, PNGSIG, 24*1024*1024, 'generated_png')
 
 
 @app.post('/v1/edit3d',dependencies=[Depends(require_auth)])
@@ -404,7 +142,7 @@ async def submit_edit3d_job(inp: Edit3DIn):
     service=shapeup_backend()
     mesh=decode_binary(inp.mesh_glb_base64,b'glTF',MAX_GLB,'mesh_glb')
     if not inp.edit_png_base64:
-        raise HTTPException(422, 'ShapeUp requires a target edit image; choose a generated preview or PNG image')
+        raise HTTPException(422, 'ShapeUp requires a target edit image; choose a component reference PNG')
     image=decode_binary(inp.edit_png_base64,PNGSIG,MAX_PNG,'edit_png')
     return await service.submit(mesh,image,seed=inp.seed,steps=inp.steps,
                                 watertight_resolution=inp.watertight_resolution)

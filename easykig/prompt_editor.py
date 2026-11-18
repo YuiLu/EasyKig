@@ -10,7 +10,6 @@ from bpy.app.handlers import persistent
 from bpy.props import IntProperty
 from gpu_extras.batch import batch_for_shader
 
-from .properties import get_image_prompt, set_image_prompt
 
 
 PROMPT_LIMIT = 1500
@@ -47,12 +46,12 @@ def _wrap(value, width):
 def draw_prompt(layout, context, settings):
     box = layout.box()
     header = box.row(align=True)
-    header.label(text='Prompt', icon='TEXT')
-    header.operator('easykig.paste_image_prompt', text='Paste', icon='PASTEDOWN')
-    header.operator('easykig.paste_image_prompt', text='', icon='X').clear = True
-    value = get_image_prompt(settings)
+    header.label(text='Editing Notes', icon='TEXT')
+    header.operator('easykig.paste_editing_prompt', text='Paste', icon='PASTEDOWN')
+    header.operator('easykig.paste_editing_prompt', text='', icon='X').clear = True
+    value = settings.editing_prompt
     if hasattr(box, 'textbox'):
-        box.textbox(settings, 'image_prompt_value', initial_visible_lines=5, placeholder='Describe the design')
+        box.textbox(settings, 'editing_prompt', initial_visible_lines=5, placeholder='Notes for text-conditioned editing')
     else:
         body = box.box().column(align=True)
         body.operator_context = 'INVOKE_DEFAULT'
@@ -61,12 +60,12 @@ def draw_prompt(layout, context, settings):
         lines = _wrap(value, max(30, context.region.width - 70 * scale))
         for index in range(min(5, max(3, len(lines)))):
             start, end = lines[index] if index < len(lines) else (len(value), len(value))
-            label = value[start:end] or ('Type or paste a prompt' if not value and index == 0 else ' ')
+            label = value[start:end] or ('Type or paste editing notes' if not value and index == 0 else ' ')
             row = body.row()
             row.alignment = 'LEFT'
-            row.operator('easykig.edit_image_prompt', text=label.expandtabs(4), emboss=False, translate=False).offset = start
+            row.operator('easykig.edit_editing_prompt', text=label.expandtabs(4), emboss=False, translate=False).offset = start
         if len(lines) > 5:
-            body.operator('easykig.edit_image_prompt', text='…', emboss=False).offset = lines[5][0]
+            body.operator('easykig.edit_editing_prompt', text='…', emboss=False).offset = lines[5][0]
     if len(value) > PROMPT_LIMIT:
         box.label(text=f'{len(value):,} / {PROMPT_LIMIT:,} characters', icon='ERROR')
 
@@ -103,8 +102,8 @@ def _draw_text(x, y, text, color):
     blf.draw(0, text.expandtabs(4))
 
 
-class EASYKIG_OT_edit_image_prompt(bpy.types.Operator):
-    bl_idname = 'easykig.edit_image_prompt'
+class EASYKIG_OT_edit_editing_prompt(bpy.types.Operator):
+    bl_idname = 'easykig.edit_editing_prompt'
     bl_label = 'Edit Prompt'
     bl_description = 'Edit the multiline prompt. Ctrl+Enter applies; Esc cancels'
     offset: IntProperty(options={'HIDDEN', 'SKIP_SAVE'}, min=0)
@@ -125,7 +124,7 @@ class EASYKIG_OT_edit_image_prompt(bpy.types.Operator):
         self._area = context.area
         self._region = context.region
         self._top = event.mouse_region_y + 48 * context.preferences.system.ui_scale
-        self.value = get_image_prompt(context.scene.easykig_settings).replace('\r\n', '\n').replace('\r', '\n')
+        self.value = context.scene.easykig_settings.editing_prompt.replace('\r\n', '\n').replace('\r', '\n')
         self.caret = self.anchor = min(self.offset, len(self.value))
         self.history = []
         self.redo = []
@@ -175,7 +174,7 @@ class EASYKIG_OT_edit_image_prompt(bpy.types.Operator):
         shader = gpu.shader.from_builtin('UNIFORM_COLOR')
         _rectangle(shader, layout.left, layout.bottom, layout.right, layout.top, selection)
         _rectangle(shader, layout.left + 1, layout.bottom + 1, layout.right - 1, layout.top - 1, fill)
-        _draw_text(layout.text_x, layout.top - layout.step, 'Prompt', text)
+        _draw_text(layout.text_x, layout.top - layout.step, 'Editing Notes', text)
         done = 'Apply'
         right = layout.right - layout.pad
         button_x = right - _width(done)
@@ -209,7 +208,7 @@ class EASYKIG_OT_edit_image_prompt(bpy.types.Operator):
         bpy.types.SpaceView3D.draw_handler_remove(self._handler, 'UI')
         try:
             if commit:
-                set_image_prompt(self._scene.easykig_settings, self.value)
+                self._scene.easykig_settings.editing_prompt = self.value
             self._area.tag_redraw()
         except ReferenceError:
             pass
@@ -346,11 +345,11 @@ def _cancel_prompt(_file):
 
 
 def register():
-    bpy.utils.register_class(EASYKIG_OT_edit_image_prompt)
+    bpy.utils.register_class(EASYKIG_OT_edit_editing_prompt)
     bpy.app.handlers.load_pre.append(_cancel_prompt)
 
 
 def unregister():
     _cancel_prompt(None)
     bpy.app.handlers.load_pre.remove(_cancel_prompt)
-    bpy.utils.unregister_class(EASYKIG_OT_edit_image_prompt)
+    bpy.utils.unregister_class(EASYKIG_OT_edit_editing_prompt)

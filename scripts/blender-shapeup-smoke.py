@@ -64,7 +64,6 @@ image.generated_color = (1, .8, .8, 1)
 image.filepath_raw = str(folder/'target.png')
 image.file_format = 'PNG'
 image.save()
-settings.mesh_edit_source = 'file'
 settings.mesh_edit_image = image.filepath_raw
 settings.mesh_edit_resolution = '128'
 settings.mesh_edit_steps = 3
@@ -101,7 +100,8 @@ assert source.data.shape_keys.key_blocks['Edited'].value == key_value
 assert [tuple(v.co) for v in source.data.shape_keys.key_blocks['Edited'].data] == key_coordinates
 assert [k.name for k in source.data.shape_keys.key_blocks] == key_names
 assert [tuple(v.co) for v in source.data.vertices] == original
-result = settings.face
+assert settings.face == source
+result = next(o for o in bpy.context.scene.objects if o.get('easykig_role') == 'remote_edited_mesh')
 assert result != source and result['easykig_role'] == 'remote_edited_mesh'
 bounds = [result.matrix_world @ Vector(v) for v in result.bound_box]
 actual_bounds = [[min(v[i] for v in bounds) for i in range(3)],
